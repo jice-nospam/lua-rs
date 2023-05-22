@@ -1,0 +1,7 @@
+[package]
+name = "lua-rs"
+version = "0.1.0"
+authors = ["jice <jice.nospam@gmail.com>"]
+edition = "2021"
+
+[dependencies]
