@@ -1,0 +1,2 @@
+# run benchmark
+`cargo bench`

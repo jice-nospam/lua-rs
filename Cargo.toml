@@ -5,3 +5,15 @@ authors = ["jice <jice.nospam@gmail.com>"]
 edition = "2021"
 
 [dependencies]
+
+[dev-dependencies]
+criterion="*"
+rlua={version="*",default-features = false, features=["builtin-lua51"]}
+
+[profile.bench]
+debug = false
+debug-assertions = false
+
+[[bench]]
+name = "spectral"
+harness = false
