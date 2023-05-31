@@ -1,11 +1,11 @@
 //! Lexical Analyzer
 
-use std::rc::Rc;
-
 use crate::{
     api::LuaError,
-    object::chunk_id,
-    state::{push_string, LuaStateRef},
+    limits::Instruction,
+    object::{chunk_id, LocVar},
+    parser::FuncState,
+    state::LuaState,
     zio::Zio,
     LuaNumber,
 };
@@ -166,41 +166,62 @@ pub struct LexState<T> {
     /// look ahead token
     lookahead: Option<Token>,
     //struct FuncState *fs;  /* `FuncState' is private to the parser */
-    pub state: LuaStateRef,
+    //pub state: &mut LuaState,
     /// input stream
     z: Zio<T>,
     /// buffer for tokens
     buff: Vec<char>,
     /// current source name
-    source: String,
+    pub source: String,
     /// locale decimal point
     pub decpoint: String,
+    /// func states
+    pub vfs: Vec<FuncState>,
+    /// current func state
+    pub fs: usize,
 }
 
 impl<T> LexState<T> {
-    pub fn new(state: LuaStateRef, z: Zio<T>, source: &str) -> Self {
+    pub fn new(z: Zio<T>, source: &str) -> Self {
         Self {
             current: None,
             linenumber: 1,
             lastline: 1,
             t: None,
             lookahead: None,
-            state,
             z,
             buff: Vec::new(),
             source: source.to_owned(),
             decpoint: ".".to_owned(),
+            vfs: vec![FuncState::new(source)],
+            fs: 0,
         }
     }
-    /// read next character in the stream
-    pub fn next_char(&mut self) {
-        self.current = self.z.getc();
+    pub fn borrow_mut_fs(&mut self, idx: Option<usize>) -> &mut FuncState {
+        &mut self.vfs[idx.unwrap_or(self.fs)]
     }
-    pub fn next_token(&mut self) -> Result<(), LuaError> {
+    pub fn borrow_fs(&self, idx: Option<usize>) -> &FuncState {
+        &self.vfs[idx.unwrap_or(self.fs)]
+    }
+    pub fn borrow_mut_code(&mut self, pc: usize) -> &mut Instruction {
+        &mut self.vfs[self.fs].f.code[pc]
+    }
+    pub fn borrow_mut_local_var(&mut self, id: usize) -> &mut LocVar {
+        let fs = self.borrow_mut_fs(None);
+        &mut fs.f.locvars[fs.actvar[id]]
+    }
+    pub fn get_code(&self, pc: usize) -> Instruction {
+        self.vfs[self.fs].f.code[pc]
+    }
+    /// read next character in the stream
+    pub fn next_char(&mut self,state: &mut LuaState) {
+        self.current = self.z.getc(state);
+    }
+    pub fn next_token(&mut self, state: &mut LuaState) -> Result<(), LuaError> {
         self.lastline = self.linenumber;
         // take lookahead token if it exists, else read next token
         if self.lookahead.is_none() {
-            self.t = self.lex()?;
+            self.t = self.lex(state)?;
         } else {
             self.t = self.lookahead.take();
         }
@@ -208,7 +229,7 @@ impl<T> LexState<T> {
     }
 
     /// parse next token
-    fn lex(&mut self) -> Result<Option<Token>, LuaError> {
+    fn lex(&mut self, state: &mut LuaState) -> Result<Option<Token>, LuaError> {
         self.buff.clear();
         loop {
             match self.current {
@@ -216,54 +237,54 @@ impl<T> LexState<T> {
                     return Ok(None);
                 }
                 Some('\n') | Some('\r') => {
-                    self.inc_line_number()?;
+                    self.inc_line_number(state)?;
                     continue;
                 }
                 Some('-') => {
-                    self.next_char();
+                    self.next_char(state);
                     match self.current {
                         Some('-') => (),
                         _ => return Ok(Some(Token::new('-'))),
                     }
                     // else is a comment
-                    self.next_char();
+                    self.next_char(state);
                     if let Some('[') = self.current {
                         // long comment
-                        let sep = self.skip_sep();
+                        let sep = self.skip_sep(state);
                         self.buff.clear();
                         if sep >= 0 {
-                            self.read_long_string(sep, true)?;
+                            self.read_long_string(state, sep, true)?;
                             self.buff.clear();
                             continue;
                         }
                     }
                     // short comment. skip to end of line
                     while !self.is_current_newline() && !self.current.is_none() {
-                        self.next_char();
+                        self.next_char(state);
                     }
                     continue;
                 }
                 Some('[') => {
-                    let sep = self.skip_sep();
+                    let sep = self.skip_sep(state);
                     if sep >= 0 {
                         // long string
-                        let string_value = (self.read_long_string(sep, false)?).unwrap();
+                        let string_value = (self.read_long_string(state, sep, false)?).unwrap();
                         return Ok(Some(Token::new_string(&string_value)));
                     } else if sep == -1 {
                         return Ok(Some(Token::new('[')));
                     } else {
                         // invalid delimiter, for example [==]
-                        return self.lex_error(
+                        return self.lex_error(state,
                             "invalid long string delimiter",
                             Some(Reserved::STRING as u32),
                         );
                     }
                 }
                 Some('=') => {
-                    self.next_char();
+                    self.next_char(state);
                     match self.current {
                         Some('=') => {
-                            self.next_char();
+                            self.next_char(state);
                             return Ok(Some(Reserved::EQ.into()));
                         }
                         _ => {
@@ -272,10 +293,10 @@ impl<T> LexState<T> {
                     }
                 }
                 Some('<') => {
-                    self.next_char();
+                    self.next_char(state);
                     match self.current {
                         Some('=') => {
-                            self.next_char();
+                            self.next_char(state);
                             return Ok(Some(Reserved::LE.into()));
                         }
                         _ => {
@@ -284,10 +305,10 @@ impl<T> LexState<T> {
                     }
                 }
                 Some('>') => {
-                    self.next_char();
+                    self.next_char(state);
                     match self.current {
                         Some('=') => {
-                            self.next_char();
+                            self.next_char(state);
                             return Ok(Some(Reserved::GE.into()));
                         }
                         _ => {
@@ -296,10 +317,10 @@ impl<T> LexState<T> {
                     }
                 }
                 Some('~') => {
-                    self.next_char();
+                    self.next_char(state);
                     match self.current {
                         Some('=') => {
-                            self.next_char();
+                            self.next_char(state);
                             return Ok(Some(Reserved::NE.into()));
                         }
                         _ => {
@@ -308,13 +329,13 @@ impl<T> LexState<T> {
                     }
                 }
                 Some('\"') | Some('\'') => {
-                    let string_value = self.read_string(self.current.unwrap())?;
+                    let string_value = self.read_string(state,self.current.unwrap())?;
                     return Ok(Some(Token::new_string(&string_value)));
                 }
                 Some('.') => {
-                    self.save_and_next();
-                    if self.check_next(".") {
-                        if self.check_next(".") {
+                    self.save_and_next(state);
+                    if self.check_next(state,".") {
+                        if self.check_next(state,".") {
                             // ...
                             return Ok(Some(Reserved::DOTS.into()));
                         }
@@ -323,22 +344,22 @@ impl<T> LexState<T> {
                     } else if !self.is_current_digit() {
                         return Ok(Some(Token::new('.')));
                     } else {
-                        let value = self.read_numeral()?;
+                        let value = self.read_numeral(state)?;
                         return Ok(Some(Token::new_number(value)));
                     }
                 }
                 Some(c) => {
                     if self.is_current_space() {
-                        self.next_char();
+                        self.next_char(state);
                         continue;
                     } else if self.is_current_digit() {
-                        let value = self.read_numeral()?;
+                        let value = self.read_numeral(state)?;
                         return Ok(Some(Token::new_number(value)));
                     } else if self.is_current_alphabetic() || self.is_current('_') {
                         // identifier or reserved word
-                        self.save_and_next();
+                        self.save_and_next(state);
                         while self.is_current_alphanumeric() || self.is_current('_') {
-                            self.save_and_next();
+                            self.save_and_next(state);
                         }
                         let iden = self.buff.iter().cloned().collect::<String>();
                         for i in 0..NUM_RESERVED as usize {
@@ -353,7 +374,7 @@ impl<T> LexState<T> {
                         }
                         return Ok(Some(Token::new_name(&iden)));
                     } else {
-                        self.next_char();
+                        self.next_char(state);
                         return Ok(Some(Token::new(c)));
                     }
                 }
@@ -361,18 +382,18 @@ impl<T> LexState<T> {
         }
     }
 
-    fn inc_line_number(&mut self) -> Result<(), LuaError> {
+    fn inc_line_number(&mut self, state: &mut LuaState) -> Result<(), LuaError> {
         let old = self.current;
         debug_assert!(self.is_current_newline());
         // skip `\n' or `\r'
-        self.next_char();
+        self.next_char(state);
         if self.is_current_newline() && self.current != old {
             // skip `\n\r' or `\r\n'
-            self.next_char();
+            self.next_char(state);
         }
         self.linenumber += 1;
         if self.linenumber >= std::usize::MAX - 2 {
-            return self.syntax_error("chunk has too many lines");
+            return self.syntax_error(state,"chunk has too many lines");
         }
         Ok(())
     }
@@ -416,30 +437,27 @@ impl<T> LexState<T> {
         }
     }
 
-    pub fn syntax_error(&self, msg: &str) -> Result<(), LuaError> {
+    pub fn syntax_error(&self, state: &mut LuaState, msg: &str) -> Result<(), LuaError> {
         let token = if let Some(ref t) = self.t {
             Some(t.token)
         } else {
             None
         };
-        self.lex_error(msg, token)
+        self.lex_error(state, msg, token)
     }
 
-    pub fn lex_error<D>(&self, msg: &str, t: Option<u32>) -> Result<D, LuaError> {
+    pub fn lex_error<D>(&self, state: &mut LuaState, msg: &str, t: Option<u32>) -> Result<D, LuaError> {
         let chunk_id = chunk_id(&self.source);
-        push_string(
-            Rc::clone(&self.state),
+        state.push_string(
             &format!("{}:{}: {}", &chunk_id, self.linenumber, msg),
         );
         if let Some(t) = t {
-            push_string(
-                Rc::clone(&self.state),
+            state.push_string(
                 &format!("{} near '{}'", msg, self.token_2_txt(t)),
             );
         }
-        let cloned_state=Rc::clone(&self.state);
-        if let Some(panic) = self.state.borrow().g.panic {
-            panic(cloned_state);
+        if let Some(panic) = state.g.panic {
+            panic(state);
         }
         Err(LuaError::SyntaxError)
     }
@@ -463,13 +481,13 @@ impl<T> LexState<T> {
 
     /// skip a long comment/string separator [===[ or ]===]
     /// return the number of '=' characters in the separator
-    fn skip_sep(&mut self) -> isize {
+    fn skip_sep(&mut self,state: &mut LuaState) -> isize {
         let mut count = 0;
         let s = self.current.unwrap();
         debug_assert!(s == '[' || s == ']');
-        self.save_and_next();
+        self.save_and_next(state);
         while let Some('=') = self.current {
-            self.save_and_next();
+            self.save_and_next(state);
             count += 1;
         }
         match self.current {
@@ -479,21 +497,22 @@ impl<T> LexState<T> {
     }
 
     fn read_long_string(
-        &mut self,
+        &mut self, state: &mut LuaState,
         sep: isize,
         is_comment: bool,
     ) -> Result<Option<String>, LuaError> {
         // skip 2nd `['
-        self.save_and_next();
+        self.save_and_next(state);
         // string starts with a newline?
         if self.is_current_newline() {
             // skip it
-            self.inc_line_number()?;
+            self.inc_line_number(state)?;
         }
         loop {
             match self.current {
                 None => {
                     return self.lex_error(
+                        state,
                         if is_comment {
                             "unfinished long comment"
                         } else {
@@ -503,34 +522,34 @@ impl<T> LexState<T> {
                     )
                 }
                 Some('[') => {
-                    if self.skip_sep() == sep {
+                    if self.skip_sep(state) == sep {
                         // skip 2nd `['
-                        self.save_and_next();
+                        self.save_and_next(state);
                         if sep == 0 {
                             return self
-                                .lex_error("nesting of [[...]] is deprecated", Some('[' as u32));
+                                .lex_error(state,"nesting of [[...]] is deprecated", Some('[' as u32));
                         }
                     }
                 }
                 Some(']') => {
-                    if self.skip_sep() == sep {
+                    if self.skip_sep(state) == sep {
                         // skip 2nd `]'
-                        self.save_and_next();
+                        self.save_and_next(state);
                         break;
                     }
                 }
                 Some('\n') | Some('\r') => {
                     self.save('\n');
-                    self.inc_line_number()?;
+                    self.inc_line_number(state)?;
                     if is_comment {
                         self.buff.clear();
                     }
                 }
                 _ => {
                     if is_comment {
-                        self.next_char();
+                        self.next_char(state);
                     } else {
-                        self.save_and_next();
+                        self.save_and_next(state);
                     }
                 }
             }
@@ -549,17 +568,17 @@ impl<T> LexState<T> {
         }
     }
 
-    fn save_and_next(&mut self) {
+    fn save_and_next(&mut self,state: &mut LuaState) {
         self.save(self.current.unwrap());
-        self.next_char();
+        self.next_char(state);
     }
 
     fn save(&mut self, c: char) {
         self.buff.push(c);
     }
 
-    fn read_string(&mut self, delimiter: char) -> Result<String, LuaError> {
-        self.save_and_next();
+    fn read_string(&mut self, state: &mut LuaState,delimiter: char) -> Result<String, LuaError> {
+        self.save_and_next(state);
         let mut c: char;
         loop {
             match self.current {
@@ -567,14 +586,14 @@ impl<T> LexState<T> {
                     break;
                 }
                 None => {
-                    return self.lex_error("unfinished string", Some(Reserved::EOS as u32));
+                    return self.lex_error(state,"unfinished string", Some(Reserved::EOS as u32));
                 }
                 Some('\r') | Some('\n') => {
-                    return self.lex_error("unfinished string", Some(Reserved::STRING as u32));
+                    return self.lex_error(state,"unfinished string", Some(Reserved::STRING as u32));
                 }
                 Some('\\') => {
                     // do not save the \
-                    self.next_char();
+                    self.next_char(state);
                     match self.current {
                         Some('a') => c = '\x07', // bell
                         Some('b') => c = '\x08', // backspace
@@ -585,7 +604,7 @@ impl<T> LexState<T> {
                         Some('v') => c = '\x0B', // vertical tab
                         Some('\r') | Some('\n') => {
                             self.save('\n');
-                            self.inc_line_number()?;
+                            self.inc_line_number(state)?;
                             continue;
                         }
                         None => {
@@ -594,20 +613,20 @@ impl<T> LexState<T> {
                         Some(c) => {
                             if !c.is_digit(10) {
                                 // handles \\, \", \', and \?
-                                self.save_and_next();
+                                self.save_and_next(state);
                             } else {
                                 // character numerical value \ddd
                                 let mut i = 1;
                                 let mut value = c as u32 - '0' as u32;
-                                self.next_char();
+                                self.next_char(state);
                                 while i < 3 && self.is_current_digit() {
                                     value =
                                         10 * value + (self.current.unwrap() as u32 - '0' as u32);
-                                    self.next_char();
+                                    self.next_char(state);
                                     i = i + 1;
                                 }
                                 if value > CHAR_MAX {
-                                    return self.lex_error(
+                                    return self.lex_error(state,
                                         "escape sequence too large",
                                         Some(Reserved::STRING as u32),
                                     );
@@ -618,28 +637,28 @@ impl<T> LexState<T> {
                         }
                     }
                     self.save(c);
-                    self.next_char();
+                    self.next_char(state);
                     continue;
                 }
                 _ => {
-                    self.save_and_next();
+                    self.save_and_next(state);
                 }
             }
         }
         // skip ending delimiter
-        self.save_and_next();
+        self.save_and_next(state);
         // return the string without the ' or " delimiters
-        Ok(self.buff[1..self.buff.len() - 2]
+        Ok(self.buff[1..self.buff.len() - 1]
             .iter()
             .cloned()
             .collect::<String>())
     }
 
     /// save and consume current token if it is inside arg
-    fn check_next(&mut self, arg: &str) -> bool {
+    fn check_next(&mut self,state: &mut LuaState, arg: &str) -> bool {
         if let Some(c) = self.current {
             if arg.contains(c) {
-                self.save_and_next();
+                self.save_and_next(state);
                 return true;
             }
         }
@@ -647,9 +666,9 @@ impl<T> LexState<T> {
     }
 
     /// returns an error if we did not reach end of stream
-    pub fn check_eos(&mut self) -> Result<(), LuaError> {
+    pub fn check_eos(&mut self,state: &mut LuaState) -> Result<(), LuaError> {
         if self.current.is_some() {
-            return self.syntax_error(&format!(
+            return self.syntax_error(state,&format!(
                 "'{}' expected",
                 self.token_2_txt(Reserved::EOS as u32)
             ));
@@ -657,24 +676,24 @@ impl<T> LexState<T> {
         Ok(())
     }
 
-    fn read_numeral(&mut self) -> Result<f64, LuaError> {
+    fn read_numeral(&mut self,state: &mut LuaState) -> Result<f64, LuaError> {
         debug_assert!(self.is_current_digit());
-        self.save_and_next();
+        self.save_and_next(state);
         while self.is_current_digit() || self.is_current('.') {
-            self.save_and_next();
+            self.save_and_next(state);
         }
-        if self.check_next("Ee") {
+        if self.check_next(state,"Ee") {
             // optional exponent sign
-            self.check_next("+-");
+            self.check_next(state,"+-");
         }
         while self.is_current_alphanumeric() || self.is_current('_') {
-            self.save_and_next();
+            self.save_and_next(state);
         }
         let svalue = self.buff.iter().cloned().collect::<String>();
         // follow locale for decimal point
         let svalue = svalue.replace('.', &self.decpoint);
         svalue.parse::<f64>().map_err(|_| {
-            self.lex_error::<()>("malformed number", Some(Reserved::NUMBER as u32))
+            self.lex_error::<()>(state,"malformed number", Some(Reserved::NUMBER as u32))
                 .ok();
             LuaError::SyntaxError
         })
@@ -683,8 +702,35 @@ impl<T> LexState<T> {
     pub(crate) fn is_token(&self, arg: u32) -> bool {
         match &self.t {
             Some(t) => t.token == arg,
-            _ => false
+            _ => false,
         }
     }
-}
 
+    pub(crate) fn is_lookahead_token(&self, arg: u32) -> bool {
+        match &self.lookahead {
+            Some(t) => t.token == arg,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn error_limit(&self,state: &mut LuaState, limit: usize, what: &str) -> Result<(), LuaError> {
+        let msg = {
+            let fs = self.borrow_fs(None);
+            if fs.f.linedefined == 0 {
+                format!("main function has more than {} {}", limit, what)
+            } else {
+                format!(
+                    "function at line {} has more than {} {}",
+                    fs.f.linedefined, limit, what
+                )
+            }
+        };
+        self.lex_error(state,&msg, None)
+    }
+
+    pub(crate) fn look_ahead(&mut self, state: &mut LuaState) -> Result<(), LuaError> {
+        debug_assert!(self.is_lookahead_token(Reserved::EOS as u32));
+        self.lookahead = self.lex(state)?;
+        Ok(())
+    }
+}

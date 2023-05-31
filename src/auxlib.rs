@@ -4,23 +4,24 @@ use std::rc::Rc;
 
 use crate::{
     api::{self, LuaError},
-     LuaStateRef, LUA_GLOBALSINDEX, LUA_REGISTRYINDEX, LUA_MULTRET, state::LuaState,
+    state::LuaState,
+    LuaInteger, LuaNumber, LuaType, LUA_GLOBALSINDEX, LUA_MULTRET, LUA_REGISTRYINDEX,
 };
 
 pub use crate::libs::*;
 
-fn panic(state: LuaStateRef) -> i32 {
+fn panic(state: &mut LuaState) -> i32 {
     eprintln!(
         "PANIC: unprotected error in call to Lua API ({})",
-        api::to_string(&mut state.borrow_mut(), -1)
+        api::to_string(state, -1).unwrap()
     );
     0
 }
-fn get_s(_state: LuaStateRef, ud: &&str, buff: &mut Vec<char>) -> Result<(), ()> {
+fn get_s(_state: &mut LuaState, ud: &&str, buff: &mut Vec<char>) -> Result<(), ()> {
     if ud.is_empty() {
         return Err(());
     }
-    if ! buff.is_empty() {
+    if !buff.is_empty() {
         return Err(());
     }
     let mut to_append = ud.chars().collect();
@@ -28,26 +29,26 @@ fn get_s(_state: LuaStateRef, ud: &&str, buff: &mut Vec<char>) -> Result<(), ()>
     Ok(())
 }
 
-pub fn newstate() -> LuaStateRef {
-    let state = crate::state::newstate();
-    api::at_panic(Rc::clone(&state), panic);
+pub fn newstate() -> LuaState {
+    let mut state = crate::state::newstate();
+    api::at_panic(&mut state, panic);
     state
 }
 
-pub fn loadbuffer(state: LuaStateRef, s: &str, name: Option<&str>) -> Result<i32, LuaError> {
+pub fn loadbuffer(state: &mut LuaState, s: &str, name: Option<&str>) -> Result<i32, LuaError> {
     api::load(state, get_s, s, name)
 }
 
-pub fn loadstring(state: LuaStateRef, s: &str) -> Result<i32, LuaError> {
+pub fn loadstring(state: &mut LuaState, s: &str) -> Result<i32, LuaError> {
     loadbuffer(state, s, Some(s))
 }
 
-pub fn dostring(state: LuaStateRef, s: &str) -> Result<i32, LuaError> {
-    loadstring(Rc::clone(&state), s).and_then(|_| api::pcall(state, 0, LUA_MULTRET, 0))
+pub fn dostring(state: &mut LuaState, s: &str) -> Result<i32, LuaError> {
+    loadstring(state, s).and_then(|_| api::pcall(state, 0, LUA_MULTRET, 0))
 }
 
 pub(crate) fn register(
-    state: &mut crate::state::LuaState,
+    state: &mut LuaState,
     lib_name: &str,
     funcs: &[LibReg],
 ) -> Result<(), LuaError> {
@@ -55,7 +56,7 @@ pub(crate) fn register(
 }
 
 fn open_lib(
-    state: &mut crate::state::LuaState,
+    state: &mut LuaState,
     lib_name: Option<&str>,
     funcs: &[LibReg],
     nupvalues: isize,
@@ -70,7 +71,7 @@ fn open_lib(
                 state.pop_stack(1); // remove previous result
                                     // try global variable (and create one if it does not exist)
                 if find_table(state, LUA_GLOBALSINDEX, lib_name).is_some() {
-                    return error(format!("name conflict for module '{}'", lib_name));
+                    return error(state,&format!("name conflict for module '{}'", lib_name));
                 }
                 state.push_value(-1);
                 state.set_field(-3, lib_name); // _LOADED[libname] = new table
@@ -91,11 +92,18 @@ fn open_lib(
     Ok(())
 }
 
-fn error(_msg: String) -> Result<(), LuaError> {
-    todo!()
+pub fn error(state: &mut LuaState, msg: &str) -> Result<(), LuaError> {
+    lwhere(state,1);
+    state.push_string(&msg);
+    api::concat(state,2)?;
+    api::error(state)
 }
 
-fn find_table(state: &mut crate::state::LuaState, index: isize, name: &str) -> Option<String> {
+fn lwhere(state: &mut LuaState, arg: i32) {
+    // TODO
+}
+
+fn find_table(state: &mut LuaState, index: isize, name: &str) -> Option<String> {
     state.push_value(index);
     for module in name.split(".") {
         state.push_string(module);
@@ -116,5 +124,44 @@ fn find_table(state: &mut crate::state::LuaState, index: isize, name: &str) -> O
 }
 
 pub fn typename(s: &LuaState, index: isize) -> &str {
-    api::typename(s, api::get_type(s,index))
+    api::typename(s, api::get_type(s, index))
+}
+
+pub(crate) fn check_number(s: &mut LuaState, index: isize) -> Result<LuaNumber, LuaError> {
+    let value = api::to_number(s, index);
+    if value == 0.0 && !api::is_number(s, index) {
+        type_error(s, index, &LuaType::Number.to_string())?;
+    }
+    Ok(value)
+}
+
+pub(crate) fn check_integer(s: &mut LuaState, index: isize) -> Result<LuaInteger, LuaError> {
+    let value = api::to_number(s, index);
+    if value == 0.0 && !api::is_number(s, index) {
+        type_error(s, index, &LuaType::Number.to_string())?;
+    }
+    Ok(value as LuaInteger)
+}
+
+pub(crate) fn check_string(s: &mut LuaState, index: isize) -> Result<String, LuaError> {
+    match api::to_string(s, index) {
+        Some(s) => Ok(s.to_owned()),
+        None => {
+            type_error(s, index, &LuaType::String.to_string())?;
+            unreachable!()
+        }
+    }
+}
+pub(crate) fn type_error(s: &mut LuaState, index: isize, expected_type: &str) -> Result<(), LuaError> {
+    let value = s.index2adr(index);
+    let tname = value.get_type_name();
+    let msg=format!("{} expected, got {}", expected_type, tname);
+    s.push_string(&msg);
+    arg_error(s, index, &msg)
+}
+
+pub(crate) fn arg_error(state: &mut LuaState, narg: isize, extra_msg: &str) -> Result<(), LuaError> {
+    // TODO
+    state.push_string(&format!("bad argument #{} ({})", narg, extra_msg));
+    Err(LuaError::RuntimeError)
 }

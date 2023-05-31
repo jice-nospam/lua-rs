@@ -1,6 +1,6 @@
 //!  Opcodes for Lua virtual machine
 
-use crate::{limits::Instruction};
+use crate::limits::Instruction;
 
 ///   We assume that instructions are unsigned numbers.
 ///   All instructions have an opcode in the first 6 bits.
@@ -17,19 +17,11 @@ use crate::{limits::Instruction};
 ///   represented by 2*max), which is half the maximum for the corresponding
 ///   unsigned argument.
 
-/// basic instruction format
-pub enum OpMode {
-    ABC,
-    ABx,
-    AsBx,
-}
-
 /// size and position of opcode arguments.
 pub const SIZE_C: usize = 9;
 pub const SIZE_B: usize = 9;
 pub const SIZE_BX: usize = SIZE_C + SIZE_B;
 pub const SIZE_A: usize = 8;
-
 pub const SIZE_OP: usize = 6;
 
 pub const POS_OP: usize = 0;
@@ -38,10 +30,88 @@ pub const POS_C: usize = POS_A + SIZE_A;
 pub const POS_B: usize = POS_C + SIZE_C;
 pub const POS_BX: usize = POS_C;
 
+/// this bit 1 means constant (0 means register)
+pub const BIT_RK: u32 = 1 << (SIZE_B - 1);
+pub const MAX_INDEX_RK: usize = BIT_RK as usize - 1;
+
+/// number of list items to accumulate before a SETLIST instruction
+pub const LFIELDS_PER_FLUSH: i32 = 50;
+
+#[inline]
+pub(crate) const fn RK_AS_K(val: u32) -> u32 {
+    val | BIT_RK
+}
+#[inline]
+pub(crate) const fn RK_IS_K(val: u32) -> bool {
+    val & BIT_RK != 0
+}
+
+pub const MAXARG_A: usize = (1 << SIZE_A) - 1;
+pub const MAXARG_B: usize = (1 << SIZE_B) - 1;
+pub const MAXARG_C: usize = (1 << SIZE_C) - 1;
+pub const MAXARG_BX: usize = (1 << SIZE_BX) - 1;
+pub const MAXARG_SBX: i32 = (MAXARG_BX >> 1) as i32;
+/// value for an invalid register
+pub const NO_REG: u32 = MAXARG_A as u32;
+pub const NO_JUMP: i32 = -1;
+
+pub(crate) const OPCODE_NAME: [&str; 38] = [
+    "move",
+    "loadk",
+    "loadbool",
+    "loadnil",
+    "getupval",
+    "getglobal",
+    "gettable",
+    "setglobal",
+    "setupval",
+    "settable",
+    "newtable",
+    "opself",
+    "add",
+    "sub",
+    "mul",
+    "div",
+    "mod",
+    "pow",
+    "unm",
+    "not",
+    "len",
+    "concat",
+    "jmp",
+    "eq",
+    "lt",
+    "le",
+    "test",
+    "testset",
+    "call",
+    "tailcall",
+    "return",
+    "forloop",
+    "forprep",
+    "tforloop",
+    "setlist",
+    "close",
+    "closure",
+    "vararg",
+];
+
 #[rustfmt::skip]
 mod unformatted {
 
-#[derive(PartialEq)]
+//                              <---B---><---C---><---A-->opcode
+pub const MASK_SET_OP: u32 =  0b00000000000000000000000000111111;
+pub const MASK_UNSET_OP: u32 =0b11111111111111111111111111000000;
+pub const MASK_SET_A: u32 =   0b00000000000000000011111111000000;
+pub const MASK_SET_C: u32 =   0b00000000011111111100000000000000;
+pub const MASK_SET_B: u32 =   0b11111111100000000000000000000000;
+pub const MASK_UNSET_A: u32 = 0b11111111111111111100000000111111;
+pub const MASK_UNSET_C: u32 = 0b11111111100000000011111111111111;
+pub const MASK_UNSET_B: u32 = 0b00000000011111111111111111111111;
+pub const MASK_SET_BX: u32 =  0b11111111111111111100000000000000;
+pub const MASK_UNSET_BX: u32 =0b00000000000000000011111111111111;
+
+#[derive(PartialEq,Clone,Copy)]
 pub enum OpCode {
     //----------------------------------------------------------------------
     //    		args	description
@@ -125,76 +195,82 @@ pub enum OpCode {
     VarArg
 }
 
-impl TryFrom<u32> for OpCode {
-    type Error=();
+}
+pub use unformatted::*;
 
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Self::Move),
-            1=> Ok(Self::LoadK),
-            2=> Ok(Self::LoadBool),
-            3=> Ok(Self::LoadNil),
-            4=> Ok(Self::GetUpVal),
-            5=> Ok(Self::GetGlobal),
-            6=> Ok(Self::GetTable),
-            7=> Ok(Self::SetGlobal),
-            8=> Ok(Self::SetupVal),
-            9=> Ok(Self::SetTable),
-            10=> Ok(Self::NewTable),
-            11=> Ok(Self::OpSelf),
-            12=> Ok(Self::Add),
-            13=> Ok(Self::Sub),
-            14=> Ok(Self::Mul),
-            15=> Ok(Self::Div),
-            16=> Ok(Self::Mod),
-            17=> Ok(Self::Pow),
-            18=> Ok(Self::UnaryMinus),
-            19=> Ok(Self::Not),
-            20=> Ok(Self::Len),
-            21=> Ok(Self::Concat),
-            22=> Ok(Self::Jmp),
-            23=> Ok(Self::Eq),
-            24=> Ok(Self::Lt),
-            25=> Ok(Self::Le),
-            26=> Ok(Self::Test),
-            27=> Ok(Self::TestSet),
-            28=> Ok(Self::Call),
-            29=> Ok(Self::TailCall),
-            30=> Ok(Self::Return),
-            31=> Ok(Self::ForLoop),
-            32=> Ok(Self::ForPrep),
-            33=> Ok(Self::TForLoop),
-            34=> Ok(Self::SetList),
-            35=> Ok(Self::Close),
-            36=> Ok(Self::Closure),
-            37=> Ok(Self::VarArg),
-            _ => Err(())
+impl OpCode {
+    pub(crate) fn is_test(&self) -> bool {
+        match self {
+            OpCode::Eq
+            | OpCode::Lt
+            | OpCode::Le
+            | OpCode::Test
+            | OpCode::TestSet
+            | OpCode::TForLoop => true,
+            _ => false,
+        }
+    }
+    pub(crate) fn is_abx(&self) -> bool {
+        match self {
+            OpCode::LoadK | OpCode::GetGlobal | OpCode::SetGlobal | OpCode::Closure => true,
+            _ => false,
+        }
+    }
+    pub(crate) fn is_asbx(&self) -> bool {
+        match self {
+            OpCode::Jmp | OpCode::ForLoop | OpCode::ForPrep => true,
+            _ => false,
         }
     }
 }
 
-//                              <---B---><---C---><---A-->opcode
-pub const MASK_SET_OP: u32 =  0b00000000000000000000000000111111;
-pub const MASK_UNSET_OP: u32 =0b11111111111111111111111111000000;
-pub const MASK_SET_A: u32 =   0b00000000000000000011111111000000;
-pub const MASK_SET_C: u32 =   0b00000000011111111100000000000000;
-pub const MASK_SET_B: u32 =   0b11111111100000000000000000000000;
-pub const MASK_UNSET_A: u32 = 0b11111111111111111100000000111111;
-pub const MASK_UNSET_C: u32 = 0b11111111100000000011111111111111;
-pub const MASK_UNSET_B: u32 = 0b00000000011111111111111111111111;
-pub const MASK_SET_BX: u32 =  0b11111111111111111100000000000000;
-pub const MASK_UNSET_BX: u32 =0b00000000000000000011111111111111;
-}
-pub use unformatted::*;
+impl TryFrom<u32> for OpCode {
+    type Error = ();
 
-pub const MAXARG_A: usize = (1 << SIZE_A) - 1;
-pub const MAXARG_B: usize = (1 << SIZE_B) - 1;
-pub const MAXARG_C: usize = (1 << SIZE_C) - 1;
-pub const MAXARG_BX: usize = (1 << SIZE_BX) - 1;
-pub const MAXARG_SBX: usize = MAXARG_BX >> 1;
-/// value for an invalid register
-pub const NO_REG: u32 = MAXARG_A as u32;
-pub const NO_JUMP: i32 = -1;
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Move),
+            1 => Ok(Self::LoadK),
+            2 => Ok(Self::LoadBool),
+            3 => Ok(Self::LoadNil),
+            4 => Ok(Self::GetUpVal),
+            5 => Ok(Self::GetGlobal),
+            6 => Ok(Self::GetTable),
+            7 => Ok(Self::SetGlobal),
+            8 => Ok(Self::SetupVal),
+            9 => Ok(Self::SetTable),
+            10 => Ok(Self::NewTable),
+            11 => Ok(Self::OpSelf),
+            12 => Ok(Self::Add),
+            13 => Ok(Self::Sub),
+            14 => Ok(Self::Mul),
+            15 => Ok(Self::Div),
+            16 => Ok(Self::Mod),
+            17 => Ok(Self::Pow),
+            18 => Ok(Self::UnaryMinus),
+            19 => Ok(Self::Not),
+            20 => Ok(Self::Len),
+            21 => Ok(Self::Concat),
+            22 => Ok(Self::Jmp),
+            23 => Ok(Self::Eq),
+            24 => Ok(Self::Lt),
+            25 => Ok(Self::Le),
+            26 => Ok(Self::Test),
+            27 => Ok(Self::TestSet),
+            28 => Ok(Self::Call),
+            29 => Ok(Self::TailCall),
+            30 => Ok(Self::Return),
+            31 => Ok(Self::ForLoop),
+            32 => Ok(Self::ForPrep),
+            33 => Ok(Self::TForLoop),
+            34 => Ok(Self::SetList),
+            35 => Ok(Self::Close),
+            36 => Ok(Self::Closure),
+            37 => Ok(Self::VarArg),
+            _ => Err(()),
+        }
+    }
+}
 
 #[inline]
 pub(crate) fn get_opcode(i: Instruction) -> OpCode {
@@ -240,15 +316,21 @@ pub(crate) fn set_arg_bx(dest: &mut Instruction, arg: u32) {
 pub(crate) fn get_arg_sbx(i: Instruction) -> i32 {
     (get_arg_bx(i) as i64 - MAXARG_SBX as i64) as i32
 }
-
-pub(crate) fn create_abc(opcode: u32, a: u32, b: u32, c: u32) -> u32 {
-    opcode | (a << POS_A) | (b << POS_B) | (c << POS_C)
+pub(crate) fn set_arg_sbx(dest: &mut Instruction, sbx: i32) {
+    set_arg_bx(dest, (sbx + MAXARG_SBX) as u32);
 }
 
-pub(crate) fn create_abx(opcode: u32, a: u32, bx: u32) -> u32 {
-    opcode | (a << POS_A) | (bx << POS_BX)
+pub(crate) fn create_abc(opcode: u32, a: i32, b: i32, c: i32) -> u32 {
+    opcode
+        | ((a << POS_A) as u32 & MASK_SET_A)
+        | ((b << POS_B) as u32 & MASK_SET_B)
+        | ((c << POS_C) as u32 & MASK_SET_C)
+}
+
+pub(crate) fn create_abx(opcode: u32, a: i32, bx: u32) -> u32 {
+    opcode | ((a << POS_A) as u32 & MASK_SET_A) | ((bx << POS_BX) & MASK_SET_BX)
 }
 
 pub(crate) fn is_reg_constant(reg: u32) -> bool {
-    reg & (1<< (SIZE_B-1)) != 0
+    reg & BIT_RK != 0
 }

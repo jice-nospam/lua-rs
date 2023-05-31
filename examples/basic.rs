@@ -1,9 +1,7 @@
-use std::rc::Rc;
-
 use lua_rs::luaL;
 
 pub fn main() {
-    let state = luaL::newstate();
-    luaL::open_libs(Rc::clone(&state)).unwrap();
-    luaL::dostring(state, "print('hello world from lua-rs!')").unwrap();
+    let mut state = luaL::newstate();
+    luaL::open_libs(&mut state).unwrap();
+    luaL::dostring(&mut state, "print('hello')").unwrap();
 }

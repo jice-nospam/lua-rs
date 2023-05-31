@@ -4,16 +4,17 @@ use std::{cell::RefCell, rc::Rc};
 
 use crate::{
     api::LuaError,
+    func,
     ldo::CallId,
     limits::InstId,
     luaD::rawrunprotected,
     luaH::{Table, TableRef},
-    object::{Closure, RClosure, StkId, TValue, TVALUE_TYPE_COUNT},
-    LuaRustFunction, LUA_ENVIRONINDEX, LUA_GLOBALSINDEX, LUA_MINSTACK, LUA_MULTRET,
+    object::{Closure, RClosure, StkId, TValue, UpVal, TVALUE_TYPE_COUNT},
+    LuaNumber, LuaRustFunction, LUA_ENVIRONINDEX, LUA_GLOBALSINDEX, LUA_MINSTACK, LUA_MULTRET,
     LUA_REGISTRYINDEX,
 };
 
-pub type PanicFunction = fn(LuaStateRef) -> i32;
+pub type PanicFunction = fn(&mut LuaState) -> i32;
 
 pub const EXTRA_STACK: usize = 5;
 
@@ -35,7 +36,7 @@ pub struct CallInfo {
 }
 
 impl CallInfo {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 }
@@ -87,10 +88,12 @@ pub struct LuaState {
     /// temporary place for environments
     pub env: TableRef,
     pub envvalue: TValue,
+    /// list of open upvalues
+    pub open_upval: Vec<UpVal>,
 }
 
 impl LuaState {
-    pub fn init_stack(&mut self) {
+    pub(crate) fn init_stack(&mut self) {
         // initialize first ci
         let mut ci = CallInfo::new();
         // `function' entry for this `ci'
@@ -100,13 +103,19 @@ impl LuaState {
         ci.top = 1 + LUA_MINSTACK;
         self.base_ci.push(ci);
     }
-    pub fn push_rust_function(&mut self, func: LuaRustFunction) {
+    pub(crate) fn push_rust_function(&mut self, func: LuaRustFunction) {
         self.push_rust_closure(func, 0);
     }
-    pub fn push_string(&mut self, value: &str) {
+    pub(crate) fn push_string(&mut self, value: &str) {
         self.stack.push(TValue::String(Rc::new(value.to_owned())));
     }
-    pub fn call(&mut self, nargs: usize, nresults: i32) -> Result<(), LuaError> {
+    pub(crate) fn push_number(&mut self, value: LuaNumber) {
+        self.stack.push(TValue::Number(value));
+    }
+    pub(crate) fn push_nil(&mut self) {
+        self.stack.push(TValue::Nil);
+    }
+    pub(crate) fn call(&mut self, nargs: usize, nresults: i32) -> Result<(), LuaError> {
         self.api_check_nelems(nargs + 1);
         self.check_results(nargs, nresults);
         let len = self.stack.len();
@@ -114,8 +123,6 @@ impl LuaState {
         self.adjust_results(nresults);
         Ok(())
     }
-
-
 
     #[inline]
     fn api_check_nelems(&self, n: usize) {
@@ -155,8 +162,18 @@ impl LuaState {
         unreachable!()
     }
 
-    pub fn run_error(&self, _arg: &str) -> Result<(), LuaError> {
-        todo!()
+    pub(crate) fn run_error(&mut self, msg: &str) -> Result<(), LuaError> {
+        let fullmsg = {
+            let ci = &self.base_ci[self.ci];
+            let luacl = &self.stack[ci.func];
+            let luacl = luacl.get_lua_closure();
+            let pc = self.saved_pc;
+            let line = luacl.proto.borrow().lineinfo[pc];
+            let chunk_id = &luacl.proto.borrow().source;
+            format!("{}:{} {}", chunk_id, line, msg)
+        };
+        self.stack.push(TValue::new_string(&fullmsg));
+        Err(LuaError::RuntimeError)
     }
 
     pub(crate) fn adjust_results(&mut self, nresults: i32) {
@@ -236,20 +253,36 @@ impl LuaState {
     pub(crate) fn get_tablev(&mut self, t: &TValue, key: &TValue, val: Option<StkId>) {
         // TODO INDEX metamethods
         if let TValue::Table(rt) = t {
-            match rt.borrow_mut().get(key) {
-                Some(value) => {
-                    match val {
-                        Some(idx) => self.stack[idx]=value.clone(),
-                        None => self.stack.push(value.clone()),
+            let mut rt = rt.clone();
+            loop {
+                let newrt;
+                {
+                    let mut rtmut = rt.borrow_mut();
+                    match rtmut.get(key) {
+                        Some(value) => {
+                            // found a value, put it on stack
+                            match val {
+                                Some(idx) => self.stack[idx] = value.clone(),
+                                None => return self.stack.push(value.clone()),
+                            }
+                            return;
+                        }
+                        None => {
+                            if let Some(ref mt) = rtmut.metatable {
+                                // not found. try with the metatable
+                                newrt = mt.clone();
+                            } else {
+                                // no metatable, put Nil on stack
+                                match val {
+                                    Some(idx) => self.stack[idx] = TValue::Nil,
+                                    None => self.stack.push(TValue::Nil),
+                                }
+                                return;
+                            }
+                        }
                     }
-                    return;
                 }
-                None => {
-                    match val {
-                        Some(idx) => self.stack[idx] = TValue::Nil,
-                        None => self.stack.push(TValue::Nil),
-                    }
-                }
+                rt = newrt;
             }
         }
     }
@@ -401,21 +434,73 @@ impl LuaState {
         let ci = &self.base_ci[self.ci];
         self.base = ci.base;
         self.saved_pc = ci.saved_pc;
-        let mut i=wanted;
+        let mut i = wanted;
         // move results to correct place
-        while i != 0 && (first_result as usize) < self.stack.len() {
-            let result = self.stack.remove(first_result as usize);
-            self.stack[res] = result;
-            res+=1;
-            i-=1;
+        let mut first_result = first_result as usize;
+        while i != 0 && first_result < self.stack.len() {
+            self.stack[res] = self.stack[first_result].clone();
+            res += 1;
+            first_result += 1;
+            i -= 1;
         }
+        while i >0 {
+            i=-1;
+            self.stack[res] = TValue::Nil;
+            res+=1;
+        }
+        self.stack.resize(res, TValue::Nil);
         wanted != LUA_MULTRET
+    }
+
+    pub(crate) fn find_upval(&mut self, level: u32) -> UpVal {
+        let mut index = 0;
+        for (i, val) in self.open_upval.iter().enumerate().rev() {
+            if val.v < level as StkId {
+                index = i + 1;
+                break;
+            }
+            if val.v == level as StkId {
+                // found a corresponding value
+                return val.clone();
+            }
+        }
+        let uv = UpVal {
+            v: level as StkId,
+            value: self.stack[level as usize].clone(),
+        };
+        self.open_upval.insert(index, uv.clone());
+        uv
+    }
+
+    pub(crate) fn to_number(&mut self, obj: StkId, dst: StkId) -> bool {
+        match &self.stack[obj] {
+            TValue::Number(_) => true,
+            TValue::String(s) => match s.parse::<LuaNumber>() {
+                Ok(n) => {
+                    self.stack[dst] = TValue::Number(n);
+                    return true;
+                }
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    pub(crate) fn close_func(&mut self, level: StkId) {
+        while let Some(uv) = self.open_upval.last() {
+            if uv.v < level  {
+                break;
+            }
+            if uv.v < self.stack.len() {
+                self.stack[uv.v] = uv.value.clone();
+            }
+            self.open_upval.pop();
+        }
     }
 }
 
-fn f_luaopen(state: LuaStateRef, _: ()) -> Result<i32, LuaError> {
+fn f_luaopen(state: &mut LuaState, _: ()) -> Result<i32, LuaError> {
     let gt = Table::new();
-    let mut state = state.borrow_mut();
     state.init_stack();
     // table of globals
     state.l_gt = Rc::new(RefCell::new(gt));
@@ -423,18 +508,11 @@ fn f_luaopen(state: LuaStateRef, _: ()) -> Result<i32, LuaError> {
     Ok(0)
 }
 
-pub fn newstate() -> LuaStateRef {
+pub(crate) fn newstate() -> LuaState {
     let mut state = LuaState::default();
     state.allowhook = true;
-    let stateref = Rc::new(RefCell::new(state));
-    if rawrunprotected(Rc::clone(&stateref), f_luaopen, ()).is_err() {
+    if rawrunprotected(&mut state, f_luaopen, ()).is_err() {
     } else {
     }
-    stateref
-}
-
-pub type LuaStateRef = Rc<RefCell<LuaState>>;
-
-pub fn push_string(state: LuaStateRef, s: &str) {
-    state.borrow_mut().push_string(s);
+    state
 }

@@ -29,7 +29,7 @@ local function AtAv(x, y, t, N)
   Atv(t, y, N)
 end
 
-local N = tonumber(arg and arg[1]) or 100
+local N = 100
 local u, v, t = {}, {}, {}
 for i=1,N do u[i] = 1 end
 
@@ -41,4 +41,4 @@ for i=1,N do
   vBv = vBv + ui*vi
   vv = vv + vi*vi
 end
-io.write(string.format("%0.9f\n", math.sqrt(vBv / vv)))
+print(string.format("#%f\n", math.sqrt(vBv / vv)))

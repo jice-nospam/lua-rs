@@ -3,8 +3,6 @@ extern crate lua_rs;
 extern crate criterion;
 extern crate rlua;
 
-use std::rc::Rc;
-
 use criterion::Criterion;
 
 use lua_rs::luaL;
@@ -12,11 +10,11 @@ use lua_rs::luaL;
 const SPECTRAL_SRC:&str = include_str!("lua/spectral.lua");
 
 pub fn bench_spectral_luars(c: &mut Criterion) {
-    let state = luaL::newstate();
-    luaL::open_libs(Rc::clone(&state)).unwrap();
+    let mut state = luaL::newstate();
+    luaL::open_libs(&mut state).unwrap();
     c.bench_function("spectral lua-rs", |b| {
         b.iter(|| {
-            luaL::dostring(state.clone(), SPECTRAL_SRC).unwrap();
+            luaL::dostring(&mut state, SPECTRAL_SRC).unwrap();
         })
     });
 }

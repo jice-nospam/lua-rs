@@ -15,5 +15,16 @@
             "environment": [],
             "externalConsole": false
         },
+        {
+            "name": "spectral ex",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/target/debug/examples/spectral.exe",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false
+        },
     ]
 }

@@ -1,18 +1,18 @@
 //! Stack and Call structure of Lua
 
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 
 use crate::{
     api::LuaError,
-    luaF, luaU, luaY, luaZ,
+    luaG, luaU, luaY, luaZ,
     luaconf::LUAI_MAXRCALLS,
-    object::{Closure, LClosure, StkId, TValue},
+    object::{Closure, LClosure, ProtoRef, StkId, TValue, UpVal},
     state::{CallInfo, LuaState},
-    LuaStateRef, LUA_MINSTACK, LUA_SIGNATURE,
+    LUA_MINSTACK, LUA_SIGNATURE,
 };
 
 /// type of protected functions, to be ran by `runprotected'
-type Pfunc<T> = fn(LuaStateRef, T) -> Result<i32, LuaError>;
+type Pfunc<T> = fn(&mut LuaState, T) -> Result<i32, LuaError>;
 
 /// index in the CallInfo vector
 pub type CallId = usize;
@@ -40,14 +40,12 @@ impl<T> SParser<T> {
     }
 }
 
-fn seterrorobj(state: LuaStateRef, errcode: &LuaError) {
+fn seterrorobj(state: &mut LuaState, errcode: &LuaError) {
     match errcode {
         LuaError::ErrorHandlerError => {
-            let mut state = state.borrow_mut();
             state.push_string("error in error handling");
         }
         LuaError::SyntaxError | LuaError::RuntimeError => {
-            let mut state = state.borrow_mut();
             let msg = state.stack.last().unwrap().clone();
             state.stack.push(msg);
         }
@@ -55,11 +53,11 @@ fn seterrorobj(state: LuaStateRef, errcode: &LuaError) {
 }
 
 pub fn rawrunprotected<T>(
-    stateref: LuaStateRef,
+    state: &mut LuaState,
     func: Pfunc<T>,
     user_data: T,
 ) -> Result<i32, LuaError> {
-    func(stateref, user_data)
+    func(state, user_data)
 }
 
 impl LuaState {
@@ -94,8 +92,11 @@ impl LuaState {
         let cl_stkid = match &self.stack[cl_stkid] {
             TValue::Function(_) => cl_stkid,
             _ => {
-                // func' is not a function. check the `function' tag method
-                self.try_func_tag_method(cl_stkid)?
+                // func' is not a function. check the `function' metamethod
+                // TODO
+                //self.try_func_tag_method(cl_stkid)?
+                luaG::type_error(self, cl_stkid, "call")?;
+                unreachable!()
             }
         };
         let cl = if let TValue::Function(cl) = &self.stack[cl_stkid] {
@@ -107,14 +108,14 @@ impl LuaState {
         match cl.as_ref() {
             Closure::Lua(cl) => {
                 // Lua function. prepare its call
-                let base = if cl.proto.is_vararg {
+                let base = if cl.proto.borrow().is_vararg {
                     // vararg function
                     let nargs = self.stack.len() - cl_stkid - 1;
-                    self.adjust_varargs(&cl.proto, nargs)
+                    self.adjust_varargs(cl.proto.clone(), nargs)
                 } else {
                     // no varargs
                     let base = cl_stkid + 1;
-                    if self.stack.len() > base + cl.proto.numparams {
+                    if self.stack.len() > base + cl.proto.borrow().numparams {
                         panic!("cannot truncate stack in dprecall");
                         //self.stack.truncate(base + cl.proto.numparams);
                     }
@@ -124,12 +125,12 @@ impl LuaState {
                 ci.func = cl_stkid;
                 ci.base = base;
                 self.base = base;
-                ci.top = base + cl.proto.maxstacksize;
+                ci.top = base + cl.proto.borrow().maxstacksize;
                 self.saved_pc = 0;
                 ci.nresults = nresults;
                 self.stack.resize(ci.top, TValue::Nil);
                 self.base_ci.push(ci);
-                self.ci+=1;
+                self.ci += 1;
                 // TODO handle hooks
                 return Ok(PrecallStatus::Lua);
             }
@@ -142,20 +143,21 @@ impl LuaState {
                 ci.nresults = nresults;
                 ci.top = self.stack.len() + LUA_MINSTACK;
                 self.base_ci.push(ci);
-                self.ci+=1;
+                self.ci += 1;
                 // TODO handle hooks
-                let n = (cl.f)(self);
+                let n = (cl.f)(self).map_err(|_| LuaError::RuntimeError)?;
                 if n < 0 {
                     return Ok(PrecallStatus::RustYield);
                 } else {
+                    self.poscall(self.stack.len() as u32 - n as u32);
                     return Ok(PrecallStatus::Rust);
                 }
             }
         }
     }
 
-    pub(crate) fn adjust_varargs(&mut self, proto: &crate::object::Proto, nargs: usize) -> usize {
-        let nfix_args=proto.numparams;
+    pub(crate) fn adjust_varargs(&mut self, proto: ProtoRef, nargs: usize) -> usize {
+        let nfix_args = proto.borrow().numparams;
         for _ in nargs..nfix_args {
             self.stack.push(TValue::Nil);
         }
@@ -163,8 +165,8 @@ impl LuaState {
         let base = self.stack.len(); // final position of first argument
         let fixed_pos = base - nargs; // first fixed argument
         for i in 0..nfix_args {
-            let value = self.stack.remove(fixed_pos+i);
-            self.stack.insert(fixed_pos+i, TValue::Nil);
+            let value = self.stack.remove(fixed_pos + i);
+            self.stack.insert(fixed_pos + i, TValue::Nil);
             self.stack.push(value);
         }
         base
@@ -175,7 +177,7 @@ impl LuaState {
 }
 
 pub fn pcall<T>(
-    stateref: LuaStateRef,
+    state: &mut LuaState,
     func: Pfunc<T>,
     u: T,
     old_top: StkId,
@@ -186,31 +188,29 @@ pub fn pcall<T>(
     let old_ci;
     let old_n_ccalls;
     {
-        let mut state = stateref.borrow_mut();
         old_n_ccalls = state.n_rcalls;
         old_ci = state.ci;
         old_allowhook = state.allowhook;
         old_errfunc = state.errfunc;
         state.errfunc = ef;
     }
-    let status = rawrunprotected(Rc::clone(&stateref), func, u);
+    let status = rawrunprotected(state, func, u);
     if let Err(e) = &status {
-        luaF::close(Rc::clone(&stateref), old_top);
-        seterrorobj(Rc::clone(&stateref), e);
-        let mut state = stateref.borrow_mut();
+        state.close_func(old_top);
+        seterrorobj(state, e);
         state.n_rcalls = old_n_ccalls;
         state.ci = old_ci;
         state.base = state.base_ci[state.ci].base;
         state.saved_pc = state.base_ci[state.ci].saved_pc;
         state.allowhook = old_allowhook;
     }
-    stateref.borrow_mut().errfunc = old_errfunc;
+    state.errfunc = old_errfunc;
     status
 }
 
-fn f_parser<T>(state: LuaStateRef, parser: &mut SParser<T>) -> Result<i32, LuaError> {
+fn f_parser<T>(state: &mut LuaState, parser: &mut SParser<T>) -> Result<i32, LuaError> {
     let c = if let Some(ref mut z) = parser.z {
-        z.look_ahead()
+        z.look_ahead(state)
     } else {
         unreachable!()
     };
@@ -218,20 +218,24 @@ fn f_parser<T>(state: LuaStateRef, parser: &mut SParser<T>) -> Result<i32, LuaEr
         luaU::undump
     } else {
         luaY::parser
-    }(Rc::clone(&state), parser)?;
-    let mut state = state.borrow_mut();
-    let cl = Closure::Lua(LClosure::new(proto, Rc::clone(&state.l_gt)));
+    }(state, parser)?;
+    let nups = proto.nups;
+    let mut luacl = LClosure::new(Rc::new(RefCell::new(proto)), Rc::clone(&state.l_gt));
+    for _ in 0..nups {
+        luacl.upvalues.push(UpVal::default());
+    }
+    let cl = Closure::Lua(luacl);
     state.stack.push(TValue::Function(Rc::new(cl)));
     Ok(0)
 }
 
 pub fn protected_parser<T>(
-    state: LuaStateRef,
+    state: &mut LuaState,
     zio: luaZ::Zio<T>,
     chunk_name: &str,
 ) -> Result<i32, LuaError> {
     let mut p = SParser::new(zio, chunk_name);
-    let top = state.borrow().stack.len();
-    let errfunc = state.borrow().errfunc;
+    let top = state.stack.len();
+    let errfunc = state.errfunc;
     pcall(state, f_parser, &mut p, top, errfunc)
 }

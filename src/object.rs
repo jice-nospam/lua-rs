@@ -12,6 +12,7 @@ use crate::{
 pub type StkId = usize;
 
 pub type UserDataRef = Rc<RefCell<UserData>>;
+pub type ProtoRef = Rc<RefCell<Proto>>;
 
 #[derive(Clone, Default)]
 pub enum TValue {
@@ -47,10 +48,19 @@ impl TValue {
             TValue::LightUserData() => LuaType::LightUserData,
         }
     }
-    pub fn get_type_name(&self) -> &str {
+    pub fn get_lua_closure(&self) -> &LClosure {
+        if let TValue::Function(cl) = self {
+            if let Closure::Lua(luacl) = cl.as_ref() {
+                return luacl;
+            }
+        }
+        unreachable!()
+    }
+    #[inline]
+    pub const fn get_type_name(&self) -> &str {
         TVALUE_TYPE_NAMES[self.type_as_usize()]
     }
-    pub fn type_as_usize(&self) -> usize {
+    pub const fn type_as_usize(&self) -> usize {
         match self {
             TValue::Nil => 0,
             TValue::Number(_) => 1,
@@ -73,6 +83,12 @@ impl TValue {
         match self {
             TValue::Nil => true,
             _ => false,
+        }
+    }
+    pub fn get_number_value(&self) -> LuaNumber {
+        match self {
+            TValue::Number(n) => *n,
+            _ => 0.0,
         }
     }
     pub fn is_number(&self) -> bool {
@@ -122,7 +138,20 @@ impl Display for TValue {
             TValue::Number(n) => write!(f, "{}", n),
             TValue::Boolean(b) => write!(f, "{}", b),
             TValue::String(s) => write!(f, "{}", s),
-            _ => todo!(),
+            TValue::Table(tr) => write!(f, "table: {:p}", tr),
+            TValue::Function(cl) => write!(f, "function: {:p}", cl),
+            TValue::UserData(_) => todo!(),
+            TValue::Thread() => todo!(),
+            TValue::LightUserData() => todo!(),
+        }
+    }
+}
+
+impl std::fmt::Debug for TValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TValue::String(s) => write!(f, "{:?}", s),
+            _ => write!(f, "{}", self),
         }
     }
 }
@@ -171,36 +200,35 @@ pub struct Proto {
     /// the bytecode
     pub code: Vec<Instruction>,
     /// functions defined inside the function
-    pub p: Vec<Proto>,
+    pub p: Vec<ProtoRef>,
     /// map from opcodes to source lines
     pub lineinfo: Vec<usize>,
     /// information about local variables
     pub locvars: Vec<LocVar>,
-    pub sizeupvalues: usize,
-    pub sizek: usize,
-    pub sizecode: usize,
-    pub sizelineinfo: usize,
-    /// size of p
-    pub sizep: usize,
-    pub sizelocvars: usize,
+    /// number of upvalues
+    pub nups: usize,
     pub linedefined: usize,
     pub lastlinedefined: usize,
-    ///  number of upvalues
-    pub nups: usize,
     pub numparams: usize,
     pub is_vararg: bool,
     pub maxstacksize: usize,
+    /// file name
+    pub source: String,
 }
 
 impl Proto {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(source: &str) -> Self {
+        Self {
+            source:source.to_owned(),
+            ..Self::default()
+        }
     }
 }
 
 #[derive(Clone, Default)]
 pub struct UpVal {
-    pub v: TValue,
+    pub v: StkId,
+    pub value: TValue,
 }
 
 /// native rust closure
@@ -228,16 +256,16 @@ impl RClosure {
 }
 
 /// Lua closure
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct LClosure {
-    pub proto: Proto,
+    pub proto: ProtoRef,
     pub upvalues: Vec<UpVal>,
     pub env: TableRef,
     pub envvalue: TValue,
 }
 
 impl LClosure {
-    pub fn new(proto: Proto, env: TableRef) -> Self {
+    pub fn new(proto: ProtoRef, env: TableRef) -> Self {
         let envvalue = TValue::Table(Rc::clone(&env));
         Self {
             proto,
@@ -262,9 +290,16 @@ impl Closure {
         }
     }
     #[inline]
-    pub fn get_lua_constant(&self, id: usize) -> &TValue {
+    pub fn get_lua_constant(&self, id: usize) -> TValue {
         if let Closure::Lua(cl) = self {
-            return &cl.proto.k[id];
+            return cl.proto.borrow().k[id].clone();
+        }
+        unreachable!()
+    }
+    #[inline]
+    pub fn get_lua_upvalue(&self, id: usize) -> TValue {
+        if let Closure::Lua(cl) = self {
+            return cl.upvalues[id].value.clone();
         }
         unreachable!()
     }
@@ -304,8 +339,7 @@ mod tests {
     #[test]
     /// check if the TValue::Table works
     fn table() {
-        let state = luaL::newstate();
-        let mut state = state.borrow_mut();
+        let mut state = luaL::newstate();
         let t = TValue::new_table();
         state.set_tablev(&t, TValue::new_string("key"), TValue::new_string("value"));
         state.get_tablev(&t, &TValue::new_string("key"), None);
@@ -327,9 +361,26 @@ mod tests {
     fn hashmap() {
         let mut h = HashMap::new();
         let k = TValue::new_string("key");
-        h.insert(k,123);
+        h.insert(k, 123);
         let v = h.get(&TValue::new_string("key"));
 
-        assert_eq!(v,Some(&123));
+        assert_eq!(v, Some(&123));
+    }
+}
+
+/// converts an integer to a "floating point byte", represented as
+/// (eeeeexxx), where the real value is (1xxx) * 2^(eeeee - 1) if
+/// eeeee != 0 and (xxx) otherwise.
+pub(crate) const fn INT2FB(val: u32) -> u32 {
+    let mut e = 0; // exponent
+    let mut val = val;
+    while val >= 16 {
+        val = (val + 1) >> 1;
+        e += 1;
+    }
+    if val < 8 {
+        val
+    } else {
+        ((e + 1) << 3) | (val - 8)
     }
 }
