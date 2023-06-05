@@ -54,12 +54,12 @@ impl LuaState {
             // main loop of interpreter
             loop {
                 let i = if let Closure::Lua(cl_lua) = &*cl {
-                    #[cfg(debug_assertions)] if first {dump_function_header(cl_lua);first=false;}
+                    #[cfg(feature="debug_logs")] if first {dump_function_header(cl_lua);first=false;}
                     cl_lua.proto.borrow().code[pc]
                 } else {
                     unreachable!()
                 };
-                #[cfg(debug_assertions)] if let Closure::Lua(cl_lua) = &*cl {
+                #[cfg(feature="debug_logs")] if let Closure::Lua(cl_lua) = &*cl {
                     debug_println!("[{:04x}] {}",pc,&disassemble(i,cl_lua));
                 }
                 pc += 1;

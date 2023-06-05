@@ -6,6 +6,9 @@ edition = "2021"
 
 [dependencies]
 
+[features]
+debug_logs = []
+
 [dev-dependencies]
 criterion="*"
 rlua={version="*",default-features = false, features=["builtin-lua51"]}
