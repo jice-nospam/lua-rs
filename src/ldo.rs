@@ -1,6 +1,6 @@
 //! Stack and Call structure of Lua
 
-use std::{cell::RefCell, rc::Rc};
+use std::rc::Rc;
 
 use crate::{
     api::LuaError,
@@ -108,14 +108,14 @@ impl LuaState {
         match cl.as_ref() {
             Closure::Lua(cl) => {
                 // Lua function. prepare its call
-                let base = if cl.proto.borrow().is_vararg {
+                let base = if self.protos[cl.proto].is_vararg {
                     // vararg function
                     let nargs = self.stack.len() - cl_stkid - 1;
-                    self.adjust_varargs(cl.proto.clone(), nargs)
+                    self.adjust_varargs(cl.proto, nargs)
                 } else {
                     // no varargs
                     let base = cl_stkid + 1;
-                    if self.stack.len() > base + cl.proto.borrow().numparams {
+                    if self.stack.len() > base + self.protos[cl.proto].numparams {
                         panic!("cannot truncate stack in dprecall");
                         //self.stack.truncate(base + cl.proto.numparams);
                     }
@@ -125,7 +125,7 @@ impl LuaState {
                 ci.func = cl_stkid;
                 ci.base = base;
                 self.base = base;
-                ci.top = base + cl.proto.borrow().maxstacksize;
+                ci.top = base + self.protos[cl.proto].maxstacksize;
                 self.saved_pc = 0;
                 ci.nresults = nresults;
                 self.stack.resize(ci.top, TValue::Nil);
@@ -157,7 +157,7 @@ impl LuaState {
     }
 
     pub(crate) fn adjust_varargs(&mut self, proto: ProtoRef, nargs: usize) -> usize {
-        let nfix_args = proto.borrow().numparams;
+        let nfix_args = self.protos[proto].numparams;
         for _ in nargs..nfix_args {
             self.stack.push(TValue::Nil);
         }
@@ -220,7 +220,9 @@ fn f_parser<T>(state: &mut LuaState, parser: &mut SParser<T>) -> Result<i32, Lua
         luaY::parser
     }(state, parser)?;
     let nups = proto.nups;
-    let mut luacl = LClosure::new(Rc::new(RefCell::new(proto)), Rc::clone(&state.l_gt));
+    let protoid = state.protos.len();
+    state.protos.push(proto);
+    let mut luacl = LClosure::new(protoid, Rc::clone(&state.l_gt));
     for _ in 0..nups {
         luacl.upvalues.push(UpVal::default());
     }

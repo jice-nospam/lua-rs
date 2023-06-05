@@ -12,7 +12,8 @@ use crate::{
 pub type StkId = usize;
 
 pub type UserDataRef = Rc<RefCell<UserData>>;
-pub type ProtoRef = Rc<RefCell<Proto>>;
+/// index in the LuaState.protos vector
+pub type ProtoRef = usize;
 
 #[derive(Clone, Default)]
 pub enum TValue {
@@ -289,19 +290,19 @@ impl Closure {
             Closure::Lua(cl) => Rc::clone(&cl.env),
         }
     }
-    #[inline]
-    pub fn get_lua_constant(&self, id: usize) -> TValue {
-        if let Closure::Lua(cl) = self {
-            return cl.proto.borrow().k[id].clone();
-        }
-        unreachable!()
-    }
+
     #[inline]
     pub fn get_lua_upvalue(&self, id: usize) -> TValue {
         if let Closure::Lua(cl) = self {
             return cl.upvalues[id].value.clone();
         }
         unreachable!()
+    }
+    pub fn get_proto_id(&self) -> usize {
+        match self {
+            Closure::Rust(cl) => unreachable!(),
+            Closure::Lua(cl) => cl.proto,
+        }
     }
     pub fn get_envvalue(&self) -> &TValue {
         match self {
@@ -335,14 +336,14 @@ mod tests {
     use std::collections::HashMap;
 
     use super::TValue;
-    use crate::luaL;
+    use crate::{luaL, state::LuaState};
     #[test]
     /// check if the TValue::Table works
     fn table() {
         let mut state = luaL::newstate();
         let t = TValue::new_table();
         state.set_tablev(&t, TValue::new_string("key"), TValue::new_string("value"));
-        state.get_tablev(&t, &TValue::new_string("key"), None);
+        LuaState::get_tablev2(&mut state.stack, &t, &TValue::new_string("key"), None);
         let v = &state.stack[state.stack.len() - 1];
 
         assert!(if let TValue::String(s) = v {

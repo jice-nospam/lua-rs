@@ -9,7 +9,7 @@ use crate::{
     limits::InstId,
     luaD::rawrunprotected,
     luaH::{Table, TableRef},
-    object::{Closure, RClosure, StkId, TValue, UpVal, TVALUE_TYPE_COUNT},
+    object::{Closure, RClosure, StkId, TValue, UpVal, TVALUE_TYPE_COUNT, Proto},
     LuaNumber, LuaRustFunction, LUA_ENVIRONINDEX, LUA_GLOBALSINDEX, LUA_MINSTACK, LUA_MULTRET,
     LUA_REGISTRYINDEX,
 };
@@ -90,6 +90,8 @@ pub struct LuaState {
     pub envvalue: TValue,
     /// list of open upvalues
     pub open_upval: Vec<UpVal>,
+    /// all closures prototypes
+    pub protos: Vec<Proto>,
 }
 
 impl LuaState {
@@ -103,6 +105,10 @@ impl LuaState {
         ci.top = 1 + LUA_MINSTACK;
         self.base_ci.push(ci);
     }
+    #[inline]
+    pub fn get_lua_constant(&self, protoid: usize, kid : usize) -> TValue {
+        return self.protos[protoid].k[kid].clone();
+    }    
     pub(crate) fn push_rust_function(&mut self, func: LuaRustFunction) {
         self.push_rust_closure(func, 0);
     }
@@ -168,8 +174,9 @@ impl LuaState {
             let luacl = &self.stack[ci.func];
             let luacl = luacl.get_lua_closure();
             let pc = self.saved_pc;
-            let line = luacl.proto.borrow().lineinfo[pc];
-            let chunk_id = &luacl.proto.borrow().source;
+            let proto = &self.protos[luacl.proto];
+            let line = proto.lineinfo[pc];
+            let chunk_id = &proto.source;
             format!("{}:{} {}", chunk_id, line, msg)
         };
         self.stack.push(TValue::new_string(&fullmsg));
@@ -249,10 +256,47 @@ impl LuaState {
         }
     }
 
+    pub(crate) fn get_tablev2(stack: &mut Vec<TValue>, t: &TValue, key: &TValue, val: Option<StkId>) {
+       // TODO INDEX metamethods
+       if let TValue::Table(rt) = t {
+        let mut rt = rt.clone();
+        loop {
+            let newrt;
+            {
+                let mut rtmut = rt.borrow_mut();
+                match rtmut.get(key) {
+                    Some(value) => {
+                        // found a value, put it on stack
+                        match val {
+                            Some(idx) => stack[idx] = value.clone(),
+                            None => return stack.push(value.clone()),
+                        }
+                        return;
+                    }
+                    None => {
+                        if let Some(ref mt) = rtmut.metatable {
+                            // not found. try with the metatable
+                            newrt = mt.clone();
+                        } else {
+                            // no metatable, put Nil on stack
+                            match val {
+                                Some(idx) => stack[idx] = TValue::Nil,
+                                None => stack.push(TValue::Nil),
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
+            rt = newrt;
+        }
+    }
+    }
     /// put field value `key` from table `t` on stack
-    pub(crate) fn get_tablev(&mut self, t: &TValue, key: &TValue, val: Option<StkId>) {
+    pub(crate) fn get_tablev(stack : &mut Vec<TValue>, tableid: usize, key: &TValue, val: Option<StkId>) {
+
         // TODO INDEX metamethods
-        if let TValue::Table(rt) = t {
+        if let TValue::Table(rt) = &stack[tableid] {
             let mut rt = rt.clone();
             loop {
                 let newrt;
@@ -262,8 +306,8 @@ impl LuaState {
                         Some(value) => {
                             // found a value, put it on stack
                             match val {
-                                Some(idx) => self.stack[idx] = value.clone(),
-                                None => return self.stack.push(value.clone()),
+                                Some(idx) => stack[idx] = value.clone(),
+                                None => return stack.push(value.clone()),
                             }
                             return;
                         }
@@ -274,8 +318,8 @@ impl LuaState {
                             } else {
                                 // no metatable, put Nil on stack
                                 match val {
-                                    Some(idx) => self.stack[idx] = TValue::Nil,
-                                    None => self.stack.push(TValue::Nil),
+                                    Some(idx) => stack[idx] = TValue::Nil,
+                                    None => stack.push(TValue::Nil),
                                 }
                                 return;
                             }
@@ -349,8 +393,8 @@ impl LuaState {
 
     /// put field value `key` from table at `index` on stack
     pub(crate) fn get_field(&mut self, index: isize, key: &str) {
-        let t = self.index2adr(index);
-        self.get_tablev(&t.clone(), &TValue::new_string(key), None);
+        let t = self.index2adr(index).clone();
+        Self::get_tablev2(&mut self.stack, &t, &TValue::new_string(key), None);
     }
 
     pub(crate) fn is_table(&self, arg: isize) -> bool {
@@ -452,9 +496,9 @@ impl LuaState {
         wanted != LUA_MULTRET
     }
 
-    pub(crate) fn find_upval(&mut self, level: u32) -> UpVal {
+    pub(crate) fn find_upval(upvals:&mut Vec<UpVal>, stack: &mut[TValue], level: u32) -> UpVal {
         let mut index = 0;
-        for (i, val) in self.open_upval.iter().enumerate().rev() {
+        for (i, val) in upvals.iter().enumerate().rev() {
             if val.v < level as StkId {
                 index = i + 1;
                 break;
@@ -466,18 +510,18 @@ impl LuaState {
         }
         let uv = UpVal {
             v: level as StkId,
-            value: self.stack[level as usize].clone(),
+            value: stack[level as usize].clone(),
         };
-        self.open_upval.insert(index, uv.clone());
+        upvals.insert(index, uv.clone());
         uv
     }
 
-    pub(crate) fn to_number(&mut self, obj: StkId, dst: StkId) -> bool {
-        match &self.stack[obj] {
+    pub(crate) fn to_number(stack : &mut [TValue], obj: StkId, dst: StkId) -> bool {
+        match &stack[obj] {
             TValue::Number(_) => true,
             TValue::String(s) => match s.parse::<LuaNumber>() {
                 Ok(n) => {
-                    self.stack[dst] = TValue::Number(n);
+                    stack[dst] = TValue::Number(n);
                     return true;
                 }
                 _ => false,
@@ -497,6 +541,7 @@ impl LuaState {
             self.open_upval.pop();
         }
     }
+
 }
 
 fn f_luaopen(state: &mut LuaState, _: ()) -> Result<i32, LuaError> {
