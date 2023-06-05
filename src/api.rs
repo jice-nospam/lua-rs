@@ -106,7 +106,7 @@ pub fn get_global(s: &mut LuaState, name: &str) {
 pub fn get_field(s: &mut LuaState, index: isize, name: &str) {
     let t = s.index2adr(index).clone();
     let key = TValue::new_string(name);
-    s.get_tablev(&t, &key, None);
+    LuaState::get_tablev2(&mut s.stack, &t, &key, None);
 }
 
 pub fn push_value(s: &mut LuaState, index: isize) {

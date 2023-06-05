@@ -1,7 +1,5 @@
 //! Auxiliary functions for building Lua libraries
 
-use std::rc::Rc;
-
 use crate::{
     api::{self, LuaError},
     state::LuaState,

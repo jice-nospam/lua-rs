@@ -41,4 +41,4 @@ for i=1,N do
   vBv = vBv + ui*vi
   vv = vv + vi*vi
 end
-print(string.format("#%f\n", math.sqrt(vBv / vv)))
+--print(string.format("#%f\n", math.sqrt(vBv / vv)))

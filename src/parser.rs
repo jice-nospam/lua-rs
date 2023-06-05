@@ -1046,7 +1046,9 @@ fn push_closure<T>(
     exp: &mut ExpressionDesc,
 ) -> Result<(), LuaError> {
     let proto = lex.vfs[new_fs].f.clone();
-    lex.vfs[old_fs].f.p.push(Rc::new(RefCell::new(proto)));
+    let protoid = state.protos.len();
+    state.protos.push(proto);
+    lex.vfs[old_fs].f.p.push(protoid);
     let funcnum = lex.vfs[old_fs].f.p.len() as u32 - 1;
     let backup = lex.fs;
     lex.fs = old_fs;

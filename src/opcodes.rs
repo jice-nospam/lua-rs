@@ -274,7 +274,7 @@ impl TryFrom<u32> for OpCode {
 
 #[inline]
 pub(crate) fn get_opcode(i: Instruction) -> OpCode {
-    OpCode::try_from(i & MASK_SET_OP).unwrap()
+    unsafe { std::mem::transmute((i & MASK_SET_OP) as u8) }
 }
 pub(crate) fn set_opcode(dest: &mut Instruction, arg: u32) {
     *dest = (*dest & MASK_UNSET_OP) | (arg & MASK_SET_OP);
