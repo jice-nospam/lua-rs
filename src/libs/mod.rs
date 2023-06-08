@@ -37,7 +37,7 @@ mod tests {
         luaL::open_libs(&mut state).unwrap();
 
         let mut l_gt = state.l_gt.borrow_mut();
-        let _g = l_gt.get(&TValue::new_string("_G"));
+        let _g = l_gt.get(&TValue::from("_G"));
         assert!(_g.is_some());
     }
     #[test]
@@ -46,7 +46,7 @@ mod tests {
         luaL::open_libs(&mut state).unwrap();
 
         let mut l_gt = state.l_gt.borrow_mut();
-        let print = l_gt.get(&TValue::new_string("print"));
+        let print = l_gt.get(&TValue::from("print"));
         assert!(print.is_some());
         assert!(if let Some(TValue::Function(_)) = print { true } else {false});
     }

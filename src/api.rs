@@ -105,7 +105,7 @@ pub fn get_global(s: &mut LuaState, name: &str) {
 
 pub fn get_field(s: &mut LuaState, index: isize, name: &str) {
     let t = s.index2adr(index).clone();
-    let key = TValue::new_string(name);
+    let key = TValue::from(name);
     LuaState::get_tablev2(&mut s.stack, &t, &key, None);
 }
 
@@ -118,7 +118,7 @@ pub fn call(s: &mut LuaState, nargs: usize, nresults: i32) -> Result<(), LuaErro
 }
 
 pub fn set_field(s: &mut LuaState, idx: i32, name: &str) {
-    let key=TValue::new_string(name);
+    let key=TValue::from(name);
     let value=s.stack.pop().unwrap();
     let idx = if idx < 0 && idx > LUA_REGISTRYINDEX as i32 {
         idx+1

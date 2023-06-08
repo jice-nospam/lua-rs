@@ -227,7 +227,7 @@ fn f_parser<T>(state: &mut LuaState, parser: &mut SParser<T>) -> Result<i32, Lua
         luacl.upvalues.push(UpVal::default());
     }
     let cl = Closure::Lua(luacl);
-    state.stack.push(TValue::Function(Rc::new(cl)));
+    state.stack.push(TValue::from(cl));
     Ok(0)
 }
 

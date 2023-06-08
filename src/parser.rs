@@ -191,7 +191,7 @@ impl FuncState {
     }
 
     pub fn string_constant(&mut self, value: &str) -> usize {
-        let tvalue = TValue::new_string(value);
+        let tvalue = TValue::from(value);
         self.add_constant(tvalue.clone(), tvalue)
     }
 

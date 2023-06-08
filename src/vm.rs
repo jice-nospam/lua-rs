@@ -61,7 +61,7 @@ impl LuaState {
             // main loop of interpreter
             loop {
                 let i = self.protos[protoid].code[pc];
-                #[cfg(feature="debug_logs")] 
+                #[cfg(feature="debug_logs")]
                 {
                     if let Closure::Lua(cl_lua) = &*cl {
                         if first {dump_function_header(self, cl_lua);first=false;}
@@ -121,12 +121,12 @@ impl LuaState {
                         base = self.base as u32;
                     },
                     OpCode::SetGlobal => {
-                        let g= cl.get_env().clone();
+                        let g= cl.get_env();
                         let kid = get_arg_bx(i) as usize;
                         let key = self.get_lua_constant(cl.get_proto_id(),kid);
                         self.saved_pc = pc;
                         let value=self.stack[ra as usize].clone();
-                        self.set_tablev(&TValue::Table(g), key, value);
+                        self.set_tablev(&TValue::from(&g), key, value);
                         base = self.base as  u32;
                     },
                     OpCode::SetupVal => todo!(),
@@ -290,7 +290,7 @@ impl LuaState {
                                     ncl.upvalues.push(Self::find_upval(&mut self.open_upval, &mut self.stack, base + b));
                                 }
                             }
-                            self.stack[ra as usize] = TValue::Function(Rc::new(Closure::Lua(ncl)));
+                            self.stack[ra as usize] = TValue::from(ncl);
                             self.saved_pc = pc;
                             base = self.base as u32;
                         } else {

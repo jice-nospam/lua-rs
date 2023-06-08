@@ -68,7 +68,7 @@ mod tests {
     fn array() {
         let mut t=luaH::Table::new();
         let key = TValue::Number(1.0);
-        t.set(key.clone(),TValue::new_string("test1"));
+        t.set(key.clone(),TValue::from("test1"));
         let v = t.get(&key).unwrap();
         match v {
             TValue::String(r) => {
@@ -82,8 +82,8 @@ mod tests {
     #[test]
     fn table() {
         let mut t=luaH::Table::new();
-        let key = TValue::new_string("key1");
-        t.set(key.clone(),TValue::new_string("test1"));
+        let key = TValue::from("key1");
+        t.set(key.clone(),TValue::from("test1"));
         let v = t.get(&key).unwrap();
         match v {
             TValue::String(r) => {

@@ -108,7 +108,7 @@ impl LuaState {
     #[inline]
     pub fn get_lua_constant(&self, protoid: usize, kid : usize) -> TValue {
         return self.protos[protoid].k[kid].clone();
-    }    
+    }
     pub(crate) fn push_rust_function(&mut self, func: LuaRustFunction) {
         self.push_rust_closure(func, 0);
     }
@@ -151,7 +151,7 @@ impl LuaState {
             cl.upvalues.push(self.stack.pop().unwrap());
         }
         self.stack
-            .push(TValue::Function(Rc::new(Closure::Rust(cl))));
+            .push(TValue::from(cl));
     }
 
     fn get_current_env(&self) -> TableRef {
@@ -179,7 +179,7 @@ impl LuaState {
             let chunk_id = &proto.source;
             format!("{}:{} {}", chunk_id, line, msg)
         };
-        self.stack.push(TValue::new_string(&fullmsg));
+        self.stack.push(TValue::from(&fullmsg[..]));
         Err(LuaError::RuntimeError)
     }
 
@@ -199,7 +199,7 @@ impl LuaState {
     }
 
     pub(crate) fn push_literal(&mut self, value: &str) {
-        self.stack.push(TValue::new_string(value));
+        self.stack.push(TValue::from(value));
     }
 
     pub(crate) fn create_table(&mut self) {
@@ -342,7 +342,7 @@ impl LuaState {
         };
         let tvalue = self.index2adr(idx);
         debug_assert!(*tvalue != TValue::Nil);
-        let key = TValue::String(Rc::new(k.to_owned()));
+        let key = TValue::from(k);
         self.set_tablev(tvalue, key, value);
     }
 
@@ -394,7 +394,7 @@ impl LuaState {
     /// put field value `key` from table at `index` on stack
     pub(crate) fn get_field(&mut self, index: isize, key: &str) {
         let t = self.index2adr(index).clone();
-        Self::get_tablev2(&mut self.stack, &t, &TValue::new_string(key), None);
+        Self::get_tablev2(&mut self.stack, &t, &TValue::from(key), None);
     }
 
     pub(crate) fn is_table(&self, arg: isize) -> bool {
@@ -549,7 +549,7 @@ fn f_luaopen(state: &mut LuaState, _: ()) -> Result<i32, LuaError> {
     state.init_stack();
     // table of globals
     state.l_gt = Rc::new(RefCell::new(gt));
-    state.gtvalue = TValue::Table(state.l_gt.clone());
+    state.gtvalue = TValue::from(&state.l_gt);
     Ok(0)
 }
 

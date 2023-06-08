@@ -35,6 +35,36 @@ pub(crate) const TVALUE_TYPE_NAMES: [&str; 8] = [
 
 pub const TVALUE_TYPE_COUNT: usize = 9;
 
+impl From<&str> for TValue {
+    fn from(value: &str) -> Self {
+        Self::String(Rc::new(value.to_owned()))
+    }
+}
+
+impl From<Closure> for TValue {
+    fn from(value: Closure) -> Self {
+        Self::Function(Rc::new(value))
+    }
+}
+
+impl From<RClosure> for TValue {
+    fn from(value: RClosure) -> Self {
+        Self::Function(Rc::new(Closure::Rust(value)))
+    }
+}
+
+impl From<LClosure> for TValue {
+    fn from(value: LClosure) -> Self {
+        Self::Function(Rc::new(Closure::Lua(value)))
+    }
+}
+
+impl From<&TableRef> for TValue {
+    fn from(value: &TableRef) -> Self {
+        Self::Table(Rc::clone(value))
+    }
+}
+
 impl TValue {
     pub fn get_lua_type(&self) -> LuaType {
         match self {
@@ -73,9 +103,6 @@ impl TValue {
             TValue::Thread() => 7,
             TValue::LightUserData() => 8,
         }
-    }
-    pub fn new_string(val: &str) -> Self {
-        Self::String(Rc::new(val.to_owned()))
     }
     pub fn new_table() -> Self {
         Self::Table(Rc::new(RefCell::new(Table::new())))
@@ -342,8 +369,8 @@ mod tests {
     fn table() {
         let mut state = luaL::newstate();
         let t = TValue::new_table();
-        state.set_tablev(&t, TValue::new_string("key"), TValue::new_string("value"));
-        LuaState::get_tablev2(&mut state.stack, &t, &TValue::new_string("key"), None);
+        state.set_tablev(&t, TValue::from("key"), TValue::from("value"));
+        LuaState::get_tablev2(&mut state.stack, &t, &TValue::from("key"), None);
         let v = &state.stack[state.stack.len() - 1];
 
         assert!(if let TValue::String(s) = v {
@@ -361,9 +388,9 @@ mod tests {
     /// check if TValue can be used as HashMap keys
     fn hashmap() {
         let mut h = HashMap::new();
-        let k = TValue::new_string("key");
+        let k = TValue::from("key");
         h.insert(k, 123);
-        let v = h.get(&TValue::new_string("key"));
+        let v = h.get(&TValue::from("key"));
 
         assert_eq!(v, Some(&123));
     }

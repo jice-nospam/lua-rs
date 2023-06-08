@@ -91,7 +91,7 @@ mod tests {
         api::get_global(&mut state, "a");
         assert_eq!(
             state.stack.last().unwrap(),
-            &TValue::new_string("hello")
+            &TValue::from("hello")
         );
     }
     #[test]
