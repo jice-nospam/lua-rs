@@ -1,6 +1,6 @@
 //! Global State
 
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, collections::HashMap};
 
 use crate::{
     api::LuaError,
@@ -9,7 +9,7 @@ use crate::{
     limits::InstId,
     luaD::rawrunprotected,
     luaH::{Table, TableRef},
-    object::{Closure, RClosure, StkId, TValue, UpVal, TVALUE_TYPE_COUNT, Proto},
+    object::{Closure, RClosure, StkId, TValue, UpVal,  Proto},
     LuaNumber, LuaRustFunction, LUA_ENVIRONINDEX, LUA_GLOBALSINDEX, LUA_MINSTACK, LUA_MULTRET,
     LUA_REGISTRYINDEX,
 };
@@ -45,19 +45,15 @@ pub struct GlobalState {
     /// to be called in unprotected errors
     pub panic: Option<PanicFunction>,
     /// metatables for basic types
-    pub mt: Vec<Option<TableRef>>,
+    pub mt: HashMap<String,Option<TableRef>>,
     pub registry: TValue,
 }
 
 impl Default for GlobalState {
     fn default() -> Self {
-        let mut mt = Vec::new();
-        for _ in 0..TVALUE_TYPE_COUNT {
-            mt.push(None)
-        }
         Self {
             panic: None,
-            mt,
+            mt: HashMap::new(),
             registry: TValue::new_table(),
         }
     }
@@ -236,13 +232,13 @@ impl LuaState {
                         return;
                     }
                 }
-                _ => obj.type_as_usize(),
+                _ => obj.get_type_name().to_owned(),
             }
         };
         if let Some(TValue::Table(rcmt)) = mt {
-            self.g.mt[objtype] = Some(rcmt.clone());
+            self.g.mt.insert(objtype,Some(rcmt.clone()));
         } else {
-            self.g.mt[objtype] = None;
+            self.g.mt.remove(&objtype);
         }
     }
 

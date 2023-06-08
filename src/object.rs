@@ -5,7 +5,7 @@ use std::{cell::RefCell, fmt::Display, rc::Rc};
 use crate::{
     limits::Instruction,
     luaH::{Table, TableRef},
-    LuaNumber, LuaRustFunction, LuaType,
+    LuaNumber, LuaRustFunction,
 };
 
 /// index in the current stack
@@ -28,12 +28,6 @@ pub enum TValue {
     Thread(),
     LightUserData(),
 }
-
-pub(crate) const TVALUE_TYPE_NAMES: [&str; 8] = [
-    "nil", "number", "string", "table", "function", "userdata", "thread", "userdata",
-];
-
-pub const TVALUE_TYPE_COUNT: usize = 9;
 
 impl From<&str> for TValue {
     fn from(value: &str) -> Self {
@@ -66,19 +60,6 @@ impl From<&TableRef> for TValue {
 }
 
 impl TValue {
-    pub fn get_lua_type(&self) -> LuaType {
-        match self {
-            TValue::Boolean(_) => LuaType::Boolean,
-            TValue::Nil => LuaType::Nil,
-            TValue::Number(_) => LuaType::Number,
-            TValue::String(_) => LuaType::String,
-            TValue::Table(_) => LuaType::Table,
-            TValue::Function(_) => LuaType::Function,
-            TValue::UserData(_) => LuaType::UserData,
-            TValue::Thread() => LuaType::Thread,
-            TValue::LightUserData() => LuaType::LightUserData,
-        }
-    }
     pub fn get_lua_closure(&self) -> &LClosure {
         if let TValue::Function(cl) = self {
             if let Closure::Lua(luacl) = cl.as_ref() {
@@ -88,20 +69,16 @@ impl TValue {
         unreachable!()
     }
     #[inline]
-    pub const fn get_type_name(&self) -> &str {
-        TVALUE_TYPE_NAMES[self.type_as_usize()]
-    }
-    pub const fn type_as_usize(&self) -> usize {
+    pub fn get_type_name(&self) -> &str {
         match self {
-            TValue::Nil => 0,
-            TValue::Number(_) => 1,
-            TValue::String(_) => 2,
-            TValue::Table(_) => 3,
-            TValue::Function(_) => 4,
-            TValue::Boolean(_) => 5,
-            TValue::UserData(_) => 6,
-            TValue::Thread() => 7,
-            TValue::LightUserData() => 8,
+            TValue::Nil => "nil",
+            TValue::Number(_) => "number",
+            TValue::String(_) => "string",
+            TValue::Table(_) => "table",
+            TValue::Function(_) => "function",
+            TValue::Boolean(_) => "boolean",
+            TValue::UserData(_) | TValue::LightUserData() => "userdata",
+            TValue::Thread() => "thread",
         }
     }
     pub fn new_table() -> Self {

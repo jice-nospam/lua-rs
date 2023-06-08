@@ -3,7 +3,7 @@
 use crate::{
     api::{self, LuaError},
     state::LuaState,
-    LuaInteger, LuaNumber, LuaType, LUA_GLOBALSINDEX, LUA_MULTRET, LUA_REGISTRYINDEX,
+    LuaInteger, LuaNumber, LUA_GLOBALSINDEX, LUA_MULTRET, LUA_REGISTRYINDEX,
 };
 
 pub use crate::libs::*;
@@ -122,13 +122,13 @@ fn find_table(state: &mut LuaState, index: isize, name: &str) -> Option<String> 
 }
 
 pub fn typename(s: &LuaState, index: isize) -> &str {
-    api::typename(s, api::get_type(s, index))
+    s.index2adr(index).get_type_name()
 }
 
 pub(crate) fn check_number(s: &mut LuaState, index: isize) -> Result<LuaNumber, LuaError> {
     let value = api::to_number(s, index);
     if value == 0.0 && !api::is_number(s, index) {
-        type_error(s, index, &LuaType::Number.to_string())?;
+        type_error(s, index, "number")?;
     }
     Ok(value)
 }
@@ -136,7 +136,7 @@ pub(crate) fn check_number(s: &mut LuaState, index: isize) -> Result<LuaNumber, 
 pub(crate) fn check_integer(s: &mut LuaState, index: isize) -> Result<LuaInteger, LuaError> {
     let value = api::to_number(s, index);
     if value == 0.0 && !api::is_number(s, index) {
-        type_error(s, index, &LuaType::Number.to_string())?;
+        type_error(s, index, "number")?;
     }
     Ok(value as LuaInteger)
 }
@@ -145,7 +145,7 @@ pub(crate) fn check_string(s: &mut LuaState, index: isize) -> Result<String, Lua
     match api::to_string(s, index) {
         Some(s) => Ok(s.to_owned()),
         None => {
-            type_error(s, index, &LuaType::String.to_string())?;
+            type_error(s, index, "string")?;
             unreachable!()
         }
     }

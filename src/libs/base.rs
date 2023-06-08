@@ -1,6 +1,6 @@
 //! Basic library
 
-use crate::{luaL,api,state::LuaState, LUA_GLOBALSINDEX, LUA_VERSION, LuaRustFunction, api::LuaError, LuaType, LuaNumber};
+use crate::{luaL,api,state::LuaState, LUA_GLOBALSINDEX, LUA_VERSION, LuaRustFunction, api::LuaError, LuaNumber, object::TValue};
 
 use super::LibReg;
 
@@ -157,17 +157,17 @@ pub fn luab_tonumber(state: &mut LuaState) -> Result<i32,()> {
 }
 pub fn luab_tostring(s: &mut LuaState) -> Result<i32,()> {
     // TODO hangle metamethods
-    match api::get_type(s,1) {
-        LuaType::Number => {
+    match s.index2adr(1) {
+        TValue::Number(_) => {
             let value=api::to_string(s,1).unwrap();
             api::push_string(s, &value);
         },
-        LuaType::String => api::push_value(s, 1),
-        LuaType::Boolean => {
+        TValue::String(_) => api::push_value(s, 1),
+        TValue::Boolean(_) => {
             let value = api::to_boolean(s,1);
             api::push_string(s, if value {"true"} else {"false"});
         },
-        LuaType::Nil => api::push_string(s,"nil"),
+        TValue::Nil => api::push_string(s,"nil"),
         _ => {
             let ptr=api::to_pointer(s,1);
             let value=format!("{} : {:?}", luaL::typename(s,1),ptr);

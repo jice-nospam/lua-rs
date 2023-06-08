@@ -2,7 +2,7 @@
 
 use crate::{
     luaD, luaG, luaV, luaZ,
-    object::{TValue, TVALUE_TYPE_NAMES},
+    object::TValue,
     state::{LuaState, PanicFunction},
     Reader, LUA_GLOBALSINDEX, LuaNumber, LUA_REGISTRYINDEX, LuaInteger,
 };
@@ -15,27 +15,6 @@ pub enum LuaError {
     RuntimeError,
     /// error during parsing of the source code
     SyntaxError,
-}
-
-#[derive(Clone,Copy)]
-pub enum LuaType {
-    None = -1,
-    Nil,
-    Boolean,
-    LightUserData,
-    Number,
-    String,
-    Table,
-    Function,
-    UserData,
-    Thread
-}
-
-impl std::fmt::Display for LuaType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let id=*self as isize;
-        write!(f,"{}",if id == -1 {"none"} else {TVALUE_TYPE_NAMES[id as usize]})
-    }
 }
 
 pub fn at_panic(state: &mut LuaState, panic: PanicFunction) -> Option<PanicFunction> {
@@ -133,10 +112,6 @@ pub fn pop(s: &mut LuaState, count: usize) {
     s.pop_stack(count);
 }
 
-pub fn get_type(s: &LuaState, index: isize) -> LuaType {
-    s.index2adr(index).get_lua_type()
-}
-
 pub fn push_string(s: &mut LuaState, value: &str) {
     s.push_string(value);
 }
@@ -176,12 +151,6 @@ pub fn is_string(s: &mut LuaState, index: isize) -> bool {
 
 pub fn is_nil(s: &mut LuaState, index: isize) -> bool {
     s.index2adr(index).is_nil()
-}
-
-
-pub fn typename(_s: &LuaState, tt: LuaType) -> &str {
-    let index=tt as usize;
-    TVALUE_TYPE_NAMES[index]
 }
 
 pub fn to_pointer(s: &mut LuaState, index: isize) -> *const TValue {
