@@ -5,11 +5,11 @@ use crate::limits::Instruction;
 ///   We assume that instructions are unsigned numbers.
 ///   All instructions have an opcode in the first 6 bits.
 ///   Instructions can have the following fields:
-/// 	`A' : 8 bits
-/// 	`B' : 9 bits
-/// 	`C' : 9 bits
-/// 	`Bx' : 18 bits (`B' and `C' together)
-/// 	`sBx' : signed Bx
+///     `A' : 8 bits
+///     `B' : 9 bits
+///     `C' : 9 bits
+///     `Bx' : 18 bits (`B' and `C' together)
+///     `sBx' : signed Bx
 
 ///   A signed argument is represented in excess K; that is, the number
 ///   value is the unsigned value minus K. K is exactly the maximum value
@@ -35,14 +35,14 @@ pub const BIT_RK: u32 = 1 << (SIZE_B - 1);
 pub const MAX_INDEX_RK: usize = BIT_RK as usize - 1;
 
 /// number of list items to accumulate before a SETLIST instruction
-pub const LFIELDS_PER_FLUSH: i32 = 50;
+pub const LFIELDS_PER_FLUSH: u32 = 50;
 
 #[inline]
-pub(crate) const fn RK_AS_K(val: u32) -> u32 {
+pub(crate) const fn rk_as_k(val: u32) -> u32 {
     val | BIT_RK
 }
 #[inline]
-pub(crate) const fn RK_IS_K(val: u32) -> bool {
+pub(crate) const fn rk_is_k(val: u32) -> bool {
     val & BIT_RK != 0
 }
 
@@ -114,84 +114,84 @@ pub const MASK_UNSET_BX: u32 =0b00000000000000000011111111111111;
 #[derive(PartialEq,Clone,Copy)]
 pub enum OpCode {
     //----------------------------------------------------------------------
-    //    		args	description
+    //          args    description
     //name
     //----------------------------------------------------------------------
-    /// 	    A B	    R(A) := R(B)
+    ///         A B     R(A) := R(B)
     Move = 0,
-    /// 	    A Bx	R(A) := Kst(Bx)
+    ///         A Bx    R(A) := Kst(Bx)
     LoadK,
-    /// 	    A B C	R(A) := (Bool)B; if (C) pc++
+    ///         A B C   R(A) := (Bool)B; if (C) pc++
     LoadBool,
-    /// 	    A B	    R(A) := ... := R(B) := nil
+    ///         A B     R(A) := ... := R(B) := nil
     LoadNil,
-    /// 	    A B	    R(A) := UpValue[B]
+    ///         A B     R(A) := UpValue[B]
     GetUpVal,
-    /// 	    A Bx	R(A) := Gbl[Kst(Bx)]
+    ///         A Bx    R(A) := Gbl[Kst(Bx)]
     GetGlobal,
-    /// 	    A B C	R(A) := R(B)[RK(C)]
+    ///         A B C   R(A) := R(B)[RK(C)]
     GetTable,
-    /// 	    A Bx	Gbl[Kst(Bx)] := R(A)
+    ///         A Bx    Gbl[Kst(Bx)] := R(A)
     SetGlobal,
-    /// 	    A B	    UpValue[B] := R(A)
+    ///         A B     UpValue[B] := R(A)
     SetupVal,
-    /// 	    A B C	R(A)[RK(B)] := RK(C)
+    ///         A B C   R(A)[RK(B)] := RK(C)
     SetTable,
-    /// 	    A B C	R(A) := {} (size = B,C)
+    ///         A B C   R(A) := {} (size = B,C)
     NewTable,
-    /// 	    A B C	R(A+1) := R(B); R(A) := R(B)[RK(C)]
+    ///         A B C   R(A+1) := R(B); R(A) := R(B)[RK(C)]
     OpSelf,
-    /// 	    A B C	R(A) := RK(B) + RK(C)
+    ///         A B C   R(A) := RK(B) + RK(C)
     Add,
-    /// 	    A B C	R(A) := RK(B) - RK(C)
+    ///         A B C   R(A) := RK(B) - RK(C)
     Sub,
-    /// 	    A B C	R(A) := RK(B) * RK(C)
+    ///         A B C   R(A) := RK(B) * RK(C)
     Mul,
-    /// 	    A B C	R(A) := RK(B) / RK(C)
+    ///         A B C   R(A) := RK(B) / RK(C)
     Div,
-    /// 	    A B C	R(A) := RK(B) % RK(C)
+    ///         A B C   R(A) := RK(B) % RK(C)
     Mod,
-    /// 	    A B C	R(A) := RK(B) ^ RK(C)
+    ///         A B C   R(A) := RK(B) ^ RK(C)
     Pow,
-    /// 	    A B	    R(A) := -R(B)
+    ///         A B     R(A) := -R(B)
     UnaryMinus,
-    /// 	    A B	    R(A) := not R(B)
+    ///         A B     R(A) := not R(B)
     Not,
-    /// 	    A B	    R(A) := length of R(B)
+    ///         A B     R(A) := length of R(B)
     Len,
-    /// 	    A B C	R(A) := R(B).. ... ..R(C)
+    ///         A B C   R(A) := R(B).. ... ..R(C)
     Concat,
-    /// 	    sBx	    pc+=sBx
+    ///         sBx     pc+=sBx
     Jmp,
-    /// 	    A B C	if ((RK(B) == RK(C)) ~= A) then pc++
+    ///         A B C   if ((RK(B) == RK(C)) ~= A) then pc++
     Eq,
-    /// 	    A B C	if ((RK(B) <  RK(C)) ~= A) then pc++
+    ///         A B C   if ((RK(B) <  RK(C)) ~= A) then pc++
     Lt,
-    /// 	    A B C	if ((RK(B) <= RK(C)) ~= A) then pc++
+    ///         A B C   if ((RK(B) <= RK(C)) ~= A) then pc++
     Le,
-    /// 	    A C	    if not (R(A) <=> C) then pc++
+    ///         A C     if not (R(A) <=> C) then pc++
     Test,
-    /// 	    A B C	if (R(B) <=> C) then R(A) := R(B) else pc++
+    ///         A B C   if (R(B) <=> C) then R(A) := R(B) else pc++
     TestSet,
-    /// 	    A B C	R(A), ... ,R(A+C-2) := R(A)(R(A+1), ... ,R(A+B-1))
+    ///         A B C   R(A), ... ,R(A+C-2) := R(A)(R(A+1), ... ,R(A+B-1))
     Call,
-    /// 	    A B C	return R(A)(R(A+1), ... ,R(A+B-1))
+    ///         A B C   return R(A)(R(A+1), ... ,R(A+B-1))
     TailCall,
-    /// 	    A B	    return R(A), ... ,R(A+B-2)	(see note)
+    ///         A B     return R(A), ... ,R(A+B-2)    (see note)
     Return,
-    ///	        A sBx	R(A)+=R(A+2); if R(A) <?= R(A+1) then { pc+=sBx; R(A+3)=R(A) }
+    ///         A sBx   R(A)+=R(A+2); if R(A) <?= R(A+1) then { pc+=sBx; R(A+3)=R(A) }
     ForLoop,
-    /// 	    A sBx	R(A)-=R(A+2); pc+=sBx
+    ///         A sBx   R(A)-=R(A+2); pc+=sBx
     ForPrep,
-    ///	        A C	    R(A+3), ... ,R(A+2+C) := R(A)(R(A+1), R(A+2)); if R(A+3) ~= nil then R(A+2)=R(A+3) else pc++
+    ///         A C     R(A+3), ... ,R(A+2+C) := R(A)(R(A+1), R(A+2)); if R(A+3) ~= nil then R(A+2)=R(A+3) else pc++
     TForLoop,
-    /// 	    A B C	R(A)[(C-1)*FPF+i] := R(A+i), 1 <= i <= B
+    ///         A B C   R(A)[(C-1)*FPF+i] := R(A+i), 1 <= i <= B
     SetList,
-    /// 	    A 	    close all variables in the stack up to (>=) R(A)
+    ///         A       close all variables in the stack up to (>=) R(A)
     Close,
-    /// 	    A Bx	R(A) := closure(KPROTO[Bx], R(A), ... ,R(A+n))
+    ///         A Bx    R(A) := closure(KPROTO[Bx], R(A), ... ,R(A+n))
     Closure,
-    /// 	    A B	    R(A), R(A+1), ..., R(A+B-1) = vararg
+    ///         A B     R(A), R(A+1), ..., R(A+B-1) = vararg
     VarArg
 }
 
@@ -200,27 +200,24 @@ pub use unformatted::*;
 
 impl OpCode {
     pub(crate) fn is_test(&self) -> bool {
-        match self {
+        matches!(
+            self,
             OpCode::Eq
-            | OpCode::Lt
-            | OpCode::Le
-            | OpCode::Test
-            | OpCode::TestSet
-            | OpCode::TForLoop => true,
-            _ => false,
-        }
+                | OpCode::Lt
+                | OpCode::Le
+                | OpCode::Test
+                | OpCode::TestSet
+                | OpCode::TForLoop
+        )
     }
     pub(crate) fn is_abx(&self) -> bool {
-        match self {
-            OpCode::LoadK | OpCode::GetGlobal | OpCode::SetGlobal | OpCode::Closure => true,
-            _ => false,
-        }
+        matches!(
+            self,
+            OpCode::LoadK | OpCode::GetGlobal | OpCode::SetGlobal | OpCode::Closure
+        )
     }
     pub(crate) fn is_asbx(&self) -> bool {
-        match self {
-            OpCode::Jmp | OpCode::ForLoop | OpCode::ForPrep => true,
-            _ => false,
-        }
+        matches!(self, OpCode::Jmp | OpCode::ForLoop | OpCode::ForPrep)
     }
 }
 

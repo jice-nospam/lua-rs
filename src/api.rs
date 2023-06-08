@@ -51,7 +51,7 @@ pub fn pcall(
     errfunc: u32,
 ) -> Result<i32, LuaError> {
     let (c, func) = {
-        debug_assert!(state.stack.len() >= nargs + 1);
+        debug_assert!(state.stack.len() > nargs);
         state.check_results(nargs, nresults);
         let c = CallData {
             func: (state.stack.len() - (nargs + 1)) as u32,
@@ -171,10 +171,10 @@ pub(crate) fn error(state: &mut LuaState) -> Result<(), LuaError> {
     luaG::error_msg(state)
 }
 
-pub(crate) fn create_table(state: &mut LuaState, arg_1: i32, arg_2: i32)  {
+pub(crate) fn _create_table(_state: &mut LuaState, _arg_1: i32, _arg_2: i32)  {
     todo!()
 }
 
-pub(crate) fn replace(state: &mut LuaState, lua_environindex: isize)  {
+pub(crate) fn _replace(_state: &mut LuaState, _lua_environindex: isize)  {
     todo!()
 }

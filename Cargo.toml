@@ -18,5 +18,5 @@ debug = false
 debug-assertions = false
 
 [[bench]]
-name = "spectral"
+name = "main"
 harness = false

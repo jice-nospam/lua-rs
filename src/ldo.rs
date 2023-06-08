@@ -52,14 +52,6 @@ fn seterrorobj(state: &mut LuaState, errcode: &LuaError) {
     }
 }
 
-pub fn rawrunprotected<T>(
-    state: &mut LuaState,
-    func: Pfunc<T>,
-    user_data: T,
-) -> Result<i32, LuaError> {
-    func(state, user_data)
-}
-
 impl LuaState {
     ///  Call a function (Rust or Lua). The function to be called is at stack[cl_stkid].
     ///  The arguments are on the stack, right after the function.
@@ -121,36 +113,40 @@ impl LuaState {
                     }
                     base
                 };
-                let mut ci = CallInfo::default();
-                ci.func = cl_stkid;
-                ci.base = base;
+                let ci = CallInfo {
+                    func: cl_stkid,
+                    base,
+                    top: base + self.protos[cl.proto].maxstacksize,
+                    nresults,
+                    ..Default::default()
+                };
                 self.base = base;
-                ci.top = base + self.protos[cl.proto].maxstacksize;
                 self.saved_pc = 0;
-                ci.nresults = nresults;
                 self.stack.resize(ci.top, TValue::Nil);
                 self.base_ci.push(ci);
                 self.ci += 1;
                 // TODO handle hooks
-                return Ok(PrecallStatus::Lua);
+                Ok(PrecallStatus::Lua)
             }
             Closure::Rust(cl) => {
                 // this is a Rust function, call it
-                let mut ci = CallInfo::default();
-                ci.func = cl_stkid;
+                let ci = CallInfo {
+                    func: cl_stkid,
+                    base: cl_stkid + 1,
+                    top: self.stack.len() + LUA_MINSTACK,
+                    nresults,
+                    ..Default::default()
+                };
                 self.base = cl_stkid + 1;
-                ci.base = cl_stkid + 1;
-                ci.nresults = nresults;
-                ci.top = self.stack.len() + LUA_MINSTACK;
                 self.base_ci.push(ci);
                 self.ci += 1;
                 // TODO handle hooks
                 let n = (cl.f)(self).map_err(|_| LuaError::RuntimeError)?;
                 if n < 0 {
-                    return Ok(PrecallStatus::RustYield);
+                    Ok(PrecallStatus::RustYield)
                 } else {
                     self.poscall(self.stack.len() as u32 - n as u32);
-                    return Ok(PrecallStatus::Rust);
+                    Ok(PrecallStatus::Rust)
                 }
             }
         }
@@ -171,7 +167,7 @@ impl LuaState {
         }
         base
     }
-    pub(crate) fn try_func_tag_method(&self, _cl_stkid: StkId) -> Result<StkId, LuaError> {
+    pub(crate) fn _try_func_tag_method(&self, _cl_stkid: StkId) -> Result<StkId, LuaError> {
         todo!()
     }
 }
@@ -194,7 +190,7 @@ pub fn pcall<T>(
         old_errfunc = state.errfunc;
         state.errfunc = ef;
     }
-    let status = rawrunprotected(state, func, u);
+    let status = func(state, u);
     if let Err(e) = &status {
         state.close_func(old_top);
         seterrorobj(state, e);

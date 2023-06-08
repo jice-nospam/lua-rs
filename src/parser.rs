@@ -11,7 +11,7 @@ use crate::{
         patch_list, patch_to_here, reserve_regs, ret, set_list, set_mult_ret, store_var,
     },
     luaconf::LUAI_MAXVARS,
-    object::{LocVar, Proto, TValue, INT2FB},
+    object::{int2fb, LocVar, Proto, TValue},
     opcodes::{
         get_arg_a, set_arg_b, set_arg_c, set_opcode, OpCode, LFIELDS_PER_FLUSH, MAXARG_BX, NO_JUMP,
         NO_REG,
@@ -162,12 +162,9 @@ impl FuncState {
     }
 
     fn search_var(&self, name: &str) -> Option<usize> {
-        for i in (0..self.nactvar).rev() {
-            if name == self.get_loc_var(i).name {
-                return Some(i);
-            }
-        }
-        None
+        (0..self.nactvar)
+            .rev()
+            .find(|&i| name == self.get_loc_var(i).name)
     }
 
     fn mark_upval(&self, _v: usize) {
@@ -180,12 +177,12 @@ impl FuncState {
 
     pub(crate) fn add_constant(&mut self, key: TValue, value: TValue) -> usize {
         match self.h.get(&key) {
-            Some(i) => return *i,
+            Some(i) => *i,
             None => {
                 let kid = self.f.k.len();
                 self.h.insert(key, self.f.k.len());
                 self.f.k.push(value);
-                return kid;
+                kid
             }
         }
     }
@@ -242,10 +239,10 @@ fn block_follow(t: Option<u32>) -> bool {
     if t.is_none() {
         return true;
     }
-    match Reserved::try_from(t.unwrap()) {
-        Ok(Reserved::ELSE) | Ok(Reserved::ELSEIF) | Ok(Reserved::END) | Ok(Reserved::UNTIL) => true,
-        _ => false,
-    }
+    matches!(
+        Reserved::try_from(t.unwrap()),
+        Ok(Reserved::Else) | Ok(Reserved::ElseIf) | Ok(Reserved::End) | Ok(Reserved::Until)
+    )
 }
 
 /// parse next chunk
@@ -266,7 +263,7 @@ fn chunk<T>(lex: &mut LexState<T>, state: &mut LuaState) -> Result<(), LuaError>
     Ok(())
 }
 
-fn leave_level<T>(lex: &mut LexState<T>, state: &mut LuaState) {
+fn leave_level<T>(_lex: &mut LexState<T>, state: &mut LuaState) {
     state.n_rcalls -= 1;
 }
 
@@ -292,46 +289,46 @@ fn statement<T>(lex: &mut LexState<T>, state: &mut LuaState) -> Result<bool, Lua
     let line = lex.linenumber;
     if let Some(ref t) = lex.t {
         match Reserved::try_from(t.token) {
-            Ok(Reserved::IF) => {
+            Ok(Reserved::If) => {
                 if_stat(lex, line)?;
                 return Ok(false);
             }
-            Ok(Reserved::WHILE) => {
+            Ok(Reserved::While) => {
                 while_stat(lex, line)?;
                 return Ok(false);
             }
-            Ok(Reserved::DO) => {
+            Ok(Reserved::Do) => {
                 lex.next_token(state)?;
                 block(lex, state)?;
-                check_match(lex, state, Reserved::END as u32, Reserved::DO as u32, line)?;
+                check_match(lex, state, Reserved::End as u32, Reserved::Do as u32, line)?;
                 return Ok(false);
             }
-            Ok(Reserved::FOR) => {
+            Ok(Reserved::For) => {
                 for_stat(lex, state, line)?;
                 return Ok(false);
             }
-            Ok(Reserved::REPEAT) => {
+            Ok(Reserved::Repeat) => {
                 repeat_stat(lex, line)?;
                 return Ok(false);
             }
-            Ok(Reserved::FUNCTION) => {
+            Ok(Reserved::Function) => {
                 func_stat(lex, state, line)?;
                 return Ok(false);
             }
-            Ok(Reserved::LOCAL) => {
+            Ok(Reserved::Local) => {
                 lex.next_token(state)?;
-                if test_next(lex, state, Reserved::FUNCTION as u32)? {
+                if test_next(lex, state, Reserved::Function as u32)? {
                     local_func(lex, state)?;
                 } else {
                     local_stat(lex, state)?;
                 }
                 return Ok(false);
             }
-            Ok(Reserved::RETURN) => {
+            Ok(Reserved::Return) => {
                 return_stat(lex, state, line)?;
                 return Ok(true);
             }
-            Ok(Reserved::BREAK) => {
+            Ok(Reserved::Break) => {
                 lex.next_token(state)?;
                 break_stat(lex, line)?;
                 return Ok(true);
@@ -343,39 +340,39 @@ fn statement<T>(lex: &mut LexState<T>, state: &mut LuaState) -> Result<bool, Lua
         }
     }
     expr_stat(lex, state)?;
-    return Ok(false);
+    Ok(false)
 }
 
 #[derive(Default, PartialEq, Clone, Copy)]
 pub enum ExpressionKind {
     /// no value
     #[default]
-    VVOID = 0,
-    VNIL,
-    VTRUE,
-    VFALSE,
+    Void = 0,
+    Nil,
+    True,
+    False,
     /// info = index of constant in `k'
-    VK,
+    Constant,
     /// nval = numerical value
-    VKNUM,
+    NumberConstant,
     /// info = local register
-    VLOCAL,
+    LocalRegister,
     /// info = index of upvalue in `upvalues'
-    VUPVAL,
+    UpValue,
     /// info = index of table; aux = index of global name in `k'
-    VGLOBAL,
+    GlobalVar,
     /// info = table register; aux = index register (or `k')
-    VINDEXED,
+    Indexed,
     /// info = instruction pc
-    VJMP,
+    Jump,
     /// info = instruction pc
-    VRELOCABLE,
+    Relocable,
     /// info = result register
-    VNONRELOC,
+    NonRelocable,
     /// info = instruction pc
-    VCALL,
+    Call,
     /// info = instruction pc
-    VVARARG,
+    VarArg,
 }
 
 #[derive(Default, Clone)]
@@ -390,7 +387,7 @@ pub struct ExpressionDesc {
     pub f: i32,
 }
 impl ExpressionDesc {
-    fn init(&mut self, kind: ExpressionKind, info: i32) {
+    pub(crate) fn init(&mut self, kind: ExpressionKind, info: i32) {
         self.k = kind;
         self.info = info;
         self.t = NO_JUMP;
@@ -414,7 +411,7 @@ impl ExpressionDesc {
     }
 
     pub(crate) fn is_numeral(&self) -> bool {
-        self.k == ExpressionKind::VKNUM && self.t == NO_JUMP && self.f == NO_JUMP
+        self.k == ExpressionKind::NumberConstant && self.t == NO_JUMP && self.f == NO_JUMP
     }
 }
 
@@ -429,7 +426,7 @@ struct LHSAssignment {
 fn expr_stat<T>(lex: &mut LexState<T>, state: &mut LuaState) -> Result<(), LuaError> {
     let mut lhs = LHSAssignment::default();
     primary_expr(lex, state, &mut lhs.v)?;
-    if lhs.v.k == ExpressionKind::VCALL {
+    if lhs.v.k == ExpressionKind::Call {
         // statement = func
         // call statement uses no results
         set_arg_c(lex.borrow_mut_code(lhs.v.info as usize), 1);
@@ -449,8 +446,8 @@ fn assignment<T>(
     nvars: usize,
 ) -> Result<(), LuaError> {
     let mut exp = ExpressionDesc::default();
-    if (lhs.last().unwrap().v.k as u32) < (ExpressionKind::VLOCAL as u32)
-        || (lhs.last().unwrap().v.k as u32) > (ExpressionKind::VINDEXED as u32)
+    if (lhs.last().unwrap().v.k as u32) < (ExpressionKind::LocalRegister as u32)
+        || (lhs.last().unwrap().v.k as u32) > (ExpressionKind::Indexed as u32)
     {
         return lex.syntax_error(state, "syntax error");
     }
@@ -460,7 +457,7 @@ fn assignment<T>(
         primary_expr(lex, state, &mut nv.v)?;
         let nvk = nv.v.k;
         lhs.push(nv);
-        if let ExpressionKind::VLOCAL = nvk {
+        if let ExpressionKind::LocalRegister = nvk {
             check_conflict(lex, &exp, lhs)?;
         }
         assignment(lex, state, lhs, nvars + 1)?;
@@ -480,7 +477,7 @@ fn assignment<T>(
         }
     }
     exp.init(
-        ExpressionKind::VNONRELOC,
+        ExpressionKind::NonRelocable,
         lex.borrow_fs(None).freereg as i32 - 1,
     ); // default assignment
     luaK::store_var(lex, state, &lhs.last().unwrap().v, &mut exp)?;
@@ -495,7 +492,7 @@ fn check_next<T>(lex: &mut LexState<T>, state: &mut LuaState, token: u32) -> Res
 fn check_conflict<T>(
     _lex: &mut LexState<T>,
     _e: &ExpressionDesc,
-    lhs: &mut Vec<LHSAssignment>,
+    _lhs: &mut [LHSAssignment],
 ) -> Result<(), LuaError> {
     todo!()
 }
@@ -528,7 +525,7 @@ fn primary_expr<T>(
                 lex.next_token(state)?;
                 todo!();
             }
-            c if c == u32::from('(') || c == u32::from('{') || c == Reserved::STRING as u32 => {
+            c if c == u32::from('(') || c == u32::from('{') || c == Reserved::String as u32 => {
                 luaK::exp2nextreg(lex, state, exp)?;
                 func_args(lex, state, exp)?;
             }
@@ -566,7 +563,7 @@ fn func_args<T>(
             lex.next_token(state)?;
             if lex.is_token(')' as u32) {
                 // arg list is empty
-                args.k = ExpressionKind::VVOID;
+                args.k = ExpressionKind::Void;
             } else {
                 exp_list1(lex, state, &mut args)?;
                 luaK::set_mult_ret(lex, state, &mut args)?;
@@ -577,10 +574,10 @@ fn func_args<T>(
             // funcargs -> constructor
             constructor(lex, state, &mut args)?;
         }
-        Some(t) if t.token == Reserved::STRING as u32 => {
+        Some(t) if t.token == Reserved::String as u32 => {
             // funcargs -> STRING
             if let SemInfo::String(s) = &t.seminfo {
-                code_string(lex, &mut args, &s);
+                code_string(lex, &mut args, s);
             } else {
                 unreachable!()
             }
@@ -590,19 +587,18 @@ fn func_args<T>(
             return lex.syntax_error(state, "function arguments expected");
         }
     }
-    debug_assert!(exp.k == ExpressionKind::VNONRELOC);
+    debug_assert!(exp.k == ExpressionKind::NonRelocable);
     let base = exp.info as u32; // base register for call
-    let nparams;
-    if has_mult_ret(args.k) {
-        nparams = LUA_MULTRET as u32; // open call
+    let nparams = if has_mult_ret(args.k) {
+        LUA_MULTRET as u32 // open call
     } else {
-        if args.k != ExpressionKind::VVOID {
+        if args.k != ExpressionKind::Void {
             exp2nextreg(lex, state, &mut args)?;
         }
-        nparams = lex.borrow_fs(None).freereg as u32 - (base + 1);
-    }
+        lex.borrow_fs(None).freereg as u32 - (base + 1)
+    };
     exp.init(
-        ExpressionKind::VCALL,
+        ExpressionKind::Call,
         code_abc(
             lex,
             state,
@@ -620,13 +616,13 @@ fn func_args<T>(
 
 #[inline]
 fn has_mult_ret(k: ExpressionKind) -> bool {
-    k == ExpressionKind::VCALL || k == ExpressionKind::VVARARG
+    k == ExpressionKind::Call || k == ExpressionKind::VarArg
 }
 
 /// set expression as a astring constant
 fn code_string<T>(lex: &mut LexState<T>, exp: &mut ExpressionDesc, val: &str) {
     exp.init(
-        ExpressionKind::VK,
+        ExpressionKind::Constant,
         lex.borrow_mut_fs(None).string_constant(val) as i32,
     );
 }
@@ -640,17 +636,17 @@ fn constructor<T>(
     let pc = code_abc(lex, state, OpCode::NewTable as u32, 0, 0, 0)?;
     let mut cc = ConstructorControl::default();
     //cc.t = Some(exp);
-    exp.init(ExpressionKind::VRELOCABLE, pc as i32);
+    exp.init(ExpressionKind::Relocable, pc as i32);
     exp2nextreg(lex, state, exp)?;
     check_next(lex, state, '{' as u32)?;
     loop {
-        debug_assert!(cc.v.k == ExpressionKind::VVOID || cc.to_store > 0);
+        debug_assert!(cc.v.k == ExpressionKind::Void || cc.to_store > 0);
         if lex.is_token('}' as u32) {
             break;
         }
         close_list_field(lex, state, &mut cc, exp)?;
         match &lex.t {
-            Some(t) if t.token == Reserved::NAME as u32 => {
+            Some(t) if t.token == Reserved::Name as u32 => {
                 //  may be listfields or recfields
                 lex.look_ahead(state)?;
                 if !lex.is_lookahead_token('=' as u32) {
@@ -675,8 +671,8 @@ fn constructor<T>(
     }
     check_match(lex, state, '}' as u32, '{' as u32, line)?;
     last_list_field(lex, state, &mut cc, exp)?;
-    set_arg_b(lex.borrow_mut_code(pc as usize), INT2FB(cc.na as u32)); // set initial array size
-    set_arg_c(lex.borrow_mut_code(pc as usize), INT2FB(cc.nh as u32)); // set initial table size
+    set_arg_b(lex.borrow_mut_code(pc as usize), int2fb(cc.na as u32)); // set initial array size
+    set_arg_c(lex.borrow_mut_code(pc as usize), int2fb(cc.nh as u32)); // set initial table size
     Ok(())
 }
 
@@ -686,11 +682,11 @@ fn close_list_field<T>(
     cc: &mut ConstructorControl,
     exp: &mut ExpressionDesc,
 ) -> Result<(), LuaError> {
-    if cc.v.k == ExpressionKind::VVOID {
+    if cc.v.k == ExpressionKind::Void {
         return Ok(()); // there is no list item
     }
     exp2nextreg(lex, state, &mut cc.v)?;
-    cc.v.k = ExpressionKind::VVOID;
+    cc.v.k = ExpressionKind::Void;
     if cc.to_store == LFIELDS_PER_FLUSH as usize {
         set_list(lex, state, exp.info, cc.na as i32, cc.to_store as i32)?; // flush
         cc.to_store = 0; // no more items pending
@@ -708,7 +704,7 @@ fn rect_field<T>(
     let reg = lex.borrow_fs(None).freereg;
     let mut key = ExpressionDesc::default();
     let mut val = ExpressionDesc::default();
-    if lex.is_token(Reserved::NAME as u32) {
+    if lex.is_token(Reserved::Name as u32) {
         if cc.nh > (i32::MAX - 2) as usize {
             return lex.error_limit(state, i32::MAX as usize - 2, "items in a constructor");
         }
@@ -765,7 +761,7 @@ fn last_list_field<T>(
         luaK::set_list(lex, state, exp.info, cc.na as i32, LUA_MULTRET)?;
         cc.na -= 1; // do not count last expression (unknown number of elements)
     } else {
-        if cc.v.k != ExpressionKind::VVOID {
+        if cc.v.k != ExpressionKind::Void {
             exp2nextreg(lex, state, &mut cc.v)?;
         }
         luaK::set_list(lex, state, exp.info, cc.na as i32, cc.to_store as i32)?;
@@ -815,15 +811,13 @@ fn prefix_expr<T>(
             expr(lex, state, exp)?;
             check_match(lex, state, u32::from(')'), u32::from('('), line)?;
             luaK::discharge_vars(lex, state, exp)?;
-            return Ok(());
+            Ok(())
         }
-        Some(t) if t.token == Reserved::NAME as u32 => {
+        Some(t) if t.token == Reserved::Name as u32 => {
             single_var(lex, state, exp)?;
-            return Ok(());
+            Ok(())
         }
-        _ => {
-            return lex.syntax_error(state, "unexpected symbol");
-        }
+        _ => lex.syntax_error(state, "unexpected symbol"),
     }
 }
 
@@ -833,7 +827,7 @@ fn single_var<T>(
     exp: &mut ExpressionDesc,
 ) -> Result<(), LuaError> {
     let name = str_checkname(lex, state)?;
-    if single_var_aux(lex, lex.fs, &name, exp, true)? == ExpressionKind::VGLOBAL {
+    if single_var_aux(lex, lex.fs, &name, exp, true)? == ExpressionKind::GlobalVar {
         // info points to global name
         exp.info = lex.borrow_mut_fs(None).string_constant(&name) as i32;
     }
@@ -849,35 +843,36 @@ fn single_var_aux<T>(
 ) -> Result<ExpressionKind, LuaError> {
     // look up at current level
     if let Some(v) = lex.borrow_fs(Some(fsid)).search_var(name) {
-        exp.init(ExpressionKind::VLOCAL, v as i32);
+        exp.init(ExpressionKind::LocalRegister, v as i32);
         if !base {
             // local will be used as an upval
             lex.borrow_mut_fs(Some(fsid)).mark_upval(v);
         }
-        return Ok(ExpressionKind::VLOCAL);
+        Ok(ExpressionKind::LocalRegister)
     } else {
         // not found at current level; try upper one
         match lex.borrow_fs(Some(fsid)).prev {
             None => {
                 // no more levels. var is global
-                exp.init(ExpressionKind::VGLOBAL, NO_REG as i32);
-                return Ok(ExpressionKind::VGLOBAL);
+                exp.init(ExpressionKind::GlobalVar, NO_REG as i32);
+                Ok(ExpressionKind::GlobalVar)
             }
             Some(prev_fsid) => {
-                if let Ok(ExpressionKind::VGLOBAL) = single_var_aux(lex, prev_fsid, name, exp, base)
+                if let Ok(ExpressionKind::GlobalVar) =
+                    single_var_aux(lex, prev_fsid, name, exp, base)
                 {
-                    return Ok(ExpressionKind::VGLOBAL);
+                    return Ok(ExpressionKind::GlobalVar);
                 }
                 exp.info = exp.index_upvalue(lex.borrow_mut_fs(Some(fsid)), name);
-                exp.k = ExpressionKind::VUPVAL;
-                return Ok(ExpressionKind::VUPVAL);
+                exp.k = ExpressionKind::UpValue;
+                Ok(ExpressionKind::UpValue)
             }
         }
     }
 }
 
 fn str_checkname<T>(lex: &mut LexState<T>, state: &mut LuaState) -> Result<String, LuaError> {
-    check(lex, state, Reserved::NAME as u32)?;
+    check(lex, state, Reserved::Name as u32)?;
     let name = if let Some(ref t) = lex.t {
         if let SemInfo::String(s) = &t.seminfo {
             s.to_owned()
@@ -919,7 +914,7 @@ fn subexpr<T>(
     if let Some(uop) = unary_op(&lex.t) {
         lex.next_token(state)?;
         subexpr(lex, state, exp, UNARY_PRIORITY)?;
-        luaK::prefix(lex, uop, exp);
+        luaK::prefix(lex, state, uop, exp)?;
     } else {
         simple_exp(lex, state, exp)?;
     }
@@ -948,37 +943,37 @@ fn simple_exp<T>(
     exp: &mut ExpressionDesc,
 ) -> Result<(), LuaError> {
     match &lex.t.clone() {
-        Some(t) if t.token == Reserved::NUMBER as u32 => {
+        Some(t) if t.token == Reserved::Number as u32 => {
             if let SemInfo::Number(val) = t.seminfo {
-                exp.init(ExpressionKind::VKNUM, 0);
+                exp.init(ExpressionKind::NumberConstant, 0);
                 exp.nval = val;
             } else {
                 unreachable!()
             }
         }
-        Some(t) if t.token == Reserved::STRING as u32 => {
+        Some(t) if t.token == Reserved::String as u32 => {
             if let SemInfo::String(s) = &t.seminfo {
-                code_string(lex, exp, &s);
+                code_string(lex, exp, s);
             } else {
                 unreachable!();
             }
         }
-        Some(t) if t.token == Reserved::NIL as u32 => {
-            exp.init(ExpressionKind::VNIL, 0);
+        Some(t) if t.token == Reserved::Nil as u32 => {
+            exp.init(ExpressionKind::Nil, 0);
         }
-        Some(t) if t.token == Reserved::TRUE as u32 => {
-            exp.init(ExpressionKind::VTRUE, 0);
+        Some(t) if t.token == Reserved::True as u32 => {
+            exp.init(ExpressionKind::True, 0);
         }
-        Some(t) if t.token == Reserved::FALSE as u32 => {
-            exp.init(ExpressionKind::VFALSE, 0);
+        Some(t) if t.token == Reserved::False as u32 => {
+            exp.init(ExpressionKind::False, 0);
         }
-        Some(t) if t.token == Reserved::DOTS as u32 => {
+        Some(t) if t.token == Reserved::Dots as u32 => {
             // vararg
             if !lex.borrow_fs(None).f.is_vararg {
                 return lex.syntax_error(state, "cannot use '...' outside a vararg function");
             }
             exp.init(
-                ExpressionKind::VVARARG,
+                ExpressionKind::VarArg,
                 code_abc(lex, state, OpCode::VarArg as u32, 0, 1, 0)? as i32,
             );
         }
@@ -987,7 +982,7 @@ fn simple_exp<T>(
             constructor(lex, state, exp)?;
             return Ok(());
         }
-        Some(t) if t.token == Reserved::FUNCTION as u32 => {
+        Some(t) if t.token == Reserved::Function as u32 => {
             lex.next_token(state)?;
             body(lex, state, exp, false, lex.linenumber)?;
             return Ok(());
@@ -1028,8 +1023,8 @@ fn body<T>(
     check_match(
         lex,
         state,
-        Reserved::END as u32,
-        Reserved::FUNCTION as u32,
+        Reserved::End as u32,
+        Reserved::Function as u32,
         line,
     )?;
     close_func(lex, state)?;
@@ -1053,11 +1048,11 @@ fn push_closure<T>(
     let backup = lex.fs;
     lex.fs = old_fs;
     exp.init(
-        ExpressionKind::VRELOCABLE,
+        ExpressionKind::Relocable,
         code_abx(lex, state, OpCode::Closure as u32, 0, funcnum)? as i32,
     );
     for i in 0..lex.vfs[backup].f.nups {
-        let o = if lex.vfs[backup].upvalues[i].k == ExpressionKind::VLOCAL {
+        let o = if lex.vfs[backup].upvalues[i].k == ExpressionKind::LocalRegister {
             OpCode::Move as u32
         } else {
             OpCode::GetUpVal as u32
@@ -1076,13 +1071,13 @@ fn parameter_list<T>(lex: &mut LexState<T>, state: &mut LuaState) -> Result<(), 
         // is `parlist' not empty?
         loop {
             match &lex.t {
-                Some(t) if t.token == Reserved::NAME as u32 => {
+                Some(t) if t.token == Reserved::Name as u32 => {
                     // param -> NAME
                     let var_name = str_checkname(lex, state)?;
                     new_localvar(lex, state, var_name, nparams)?;
                     nparams += 1;
                 }
-                Some(t) if t.token == Reserved::DOTS as u32 => {
+                Some(t) if t.token == Reserved::Dots as u32 => {
                     // param -> `...`
                     lex.next_token(state)?;
                     lex.borrow_mut_fs(None).f.is_vararg = true;
@@ -1108,7 +1103,7 @@ fn parameter_list<T>(lex: &mut LexState<T>, state: &mut LuaState) -> Result<(), 
 
 fn unary_op(t: &Option<crate::lex::Token>) -> Option<UnaryOp> {
     match t {
-        Some(t) if t.token == Reserved::NOT as u32 => Some(UnaryOp::Not),
+        Some(t) if t.token == Reserved::Not as u32 => Some(UnaryOp::Not),
         Some(t) if t.token == '-' as u32 => Some(UnaryOp::Minus),
         Some(t) if t.token == '#' as u32 => Some(UnaryOp::Len),
         _ => None,
@@ -1123,15 +1118,15 @@ fn binary_op(t: &Option<crate::lex::Token>) -> Option<BinaryOp> {
         Some(t) if t.token == '/' as u32 => Some(BinaryOp::Div),
         Some(t) if t.token == '%' as u32 => Some(BinaryOp::Mod),
         Some(t) if t.token == '^' as u32 => Some(BinaryOp::Pow),
-        Some(t) if t.token == Reserved::CONCAT as u32 => Some(BinaryOp::Concat),
-        Some(t) if t.token == Reserved::NE as u32 => Some(BinaryOp::Ne),
-        Some(t) if t.token == Reserved::EQ as u32 => Some(BinaryOp::Eq),
+        Some(t) if t.token == Reserved::Concat as u32 => Some(BinaryOp::Concat),
+        Some(t) if t.token == Reserved::Ne as u32 => Some(BinaryOp::Ne),
+        Some(t) if t.token == Reserved::Eq as u32 => Some(BinaryOp::Eq),
         Some(t) if t.token == '<' as u32 => Some(BinaryOp::Lt),
-        Some(t) if t.token == Reserved::LE as u32 => Some(BinaryOp::Le),
+        Some(t) if t.token == Reserved::Le as u32 => Some(BinaryOp::Le),
         Some(t) if t.token == '>' as u32 => Some(BinaryOp::Gt),
-        Some(t) if t.token == Reserved::GE as u32 => Some(BinaryOp::Ge),
-        Some(t) if t.token == Reserved::AND as u32 => Some(BinaryOp::And),
-        Some(t) if t.token == Reserved::OR as u32 => Some(BinaryOp::Or),
+        Some(t) if t.token == Reserved::Ge as u32 => Some(BinaryOp::Ge),
+        Some(t) if t.token == Reserved::And as u32 => Some(BinaryOp::And),
+        Some(t) if t.token == Reserved::Or as u32 => Some(BinaryOp::Or),
         _ => None,
     }
 }
@@ -1144,7 +1139,7 @@ fn break_stat<T>(_lex: &mut LexState<T>, _line: usize) -> Result<(), LuaError> {
 fn return_stat<T>(
     lex: &mut LexState<T>,
     state: &mut LuaState,
-    line: usize,
+    _line: usize,
 ) -> Result<(), LuaError> {
     let first;
     let mut nret; // registers with returned values
@@ -1157,7 +1152,7 @@ fn return_stat<T>(
         nret = exp_list1(lex, state, &mut e)? as i32; // optional return values
         if has_mult_ret(e.k) {
             set_mult_ret(lex, state, &mut e)?;
-            if e.k == ExpressionKind::VCALL && nret == 1 {
+            if e.k == ExpressionKind::Call && nret == 1 {
                 // tail call ?
                 set_opcode(
                     lex.borrow_mut_code(e.info as usize),
@@ -1169,15 +1164,13 @@ fn return_stat<T>(
             }
             first = lex.borrow_fs(None).nactvar;
             nret = LUA_MULTRET;
+        } else if nret == 1 {
+            // only one single value?
+            first = exp2anyreg(lex, state, &mut e)? as usize;
         } else {
-            if nret == 1 {
-                // only one single value?
-                first = exp2anyreg(lex, state, &mut e)? as usize;
-            } else {
-                exp2nextreg(lex, state, &mut e)?; // values must go to the `stack'
-                first = lex.borrow_fs(None).nactvar;
-                debug_assert!(nret as usize == lex.borrow_fs(None).freereg - first);
-            }
+            exp2nextreg(lex, state, &mut e)?; // values must go to the `stack'
+            first = lex.borrow_fs(None).nactvar;
+            debug_assert!(nret as usize == lex.borrow_fs(None).freereg - first);
         }
     }
     ret(lex, state, first as u32, nret as u32)
@@ -1199,7 +1192,7 @@ fn local_stat<T>(lex: &mut LexState<T>, state: &mut LuaState) -> Result<(), LuaE
     if test_next(lex, state, '=' as u32)? {
         nexps = exp_list1(lex, state, &mut exp)?;
     } else {
-        exp.k = ExpressionKind::VVOID;
+        exp.k = ExpressionKind::Void;
         nexps = 0;
     }
     adjust_assign(lex, state, nvars, nexps, &mut exp)?;
@@ -1222,7 +1215,7 @@ fn adjust_assign<T>(
             reserve_regs(lex, state, extra as usize - 1)?;
         }
     } else {
-        if exp.k != ExpressionKind::VVOID {
+        if exp.k != ExpressionKind::Void {
             exp2nextreg(lex, state, exp)?; // close last expression
         }
         if extra > 0 {
@@ -1238,7 +1231,10 @@ fn local_func<T>(lex: &mut LexState<T>, state: &mut LuaState) -> Result<(), LuaE
     let var_name = str_checkname(lex, state)?;
     new_localvar(lex, state, var_name, 0)?;
     let mut v = ExpressionDesc::default();
-    v.init(ExpressionKind::VLOCAL, lex.borrow_fs(None).freereg as i32);
+    v.init(
+        ExpressionKind::LocalRegister,
+        lex.borrow_fs(None).freereg as i32,
+    );
     luaK::reserve_regs(lex, state, 1)?;
     adjust_local_vars(lex, 1);
     let mut b = ExpressionDesc::default();
@@ -1278,13 +1274,13 @@ fn new_localvar<T>(
     Ok(())
 }
 
-fn register_local_var(fs: &mut FuncState, var_name: String) -> usize {
+fn register_local_var(fs: &mut FuncState, name: String) -> usize {
     fs.f.locvars.push(LocVar {
-        name: var_name.to_owned(),
+        name,
         start_pc: 0,
         end_pc: 0,
     });
-    return fs.f.locvars.len() - 1;
+    fs.f.locvars.len() - 1
 }
 
 /// funcstat -> FUNCTION funcname body
@@ -1294,7 +1290,7 @@ fn func_stat<T>(lex: &mut LexState<T>, state: &mut LuaState, line: usize) -> Res
     let mut b = ExpressionDesc::default();
     let need_self = func_name(lex, state, &mut v)?;
     body(lex, state, &mut b, need_self, line)?;
-    store_var(lex, state, &mut v, &mut b)?;
+    store_var(lex, state, &v, &mut b)?;
     fix_line(lex, line); // definition `happens' in the first line
     Ok(())
 }
@@ -1330,14 +1326,14 @@ fn for_stat<T>(lex: &mut LexState<T>, state: &mut LuaState, line: usize) -> Resu
         Some(t) if t.token == '=' as u32 => {
             for_num(lex, state, var_name, line)?;
         }
-        Some(t) if t.token == ',' as u32 || t.token == Reserved::IN as u32 => {
+        Some(t) if t.token == ',' as u32 || t.token == Reserved::In as u32 => {
             for_list(lex, var_name)?;
         }
         _ => {
             return lex.syntax_error(state, "'=' or 'in' expected");
         }
     }
-    check_match(lex, state, Reserved::END as u32, Reserved::FOR as u32, line)?;
+    check_match(lex, state, Reserved::End as u32, Reserved::For as u32, line)?;
     leave_block(lex, state) // loop scope (`break' jumps to this point)
 }
 
@@ -1357,7 +1353,7 @@ fn leave_block<T>(lex: &mut LexState<T>, state: &mut LuaState) -> Result<(), Lua
     patch_to_here(lex, state, bl.breaklist)
 }
 
-fn for_list<T>(lex: &mut LexState<T>, var_name: String) -> Result<(), LuaError> {
+fn for_list<T>(_lex: &mut LexState<T>, _var_name: String) -> Result<(), LuaError> {
     todo!()
 }
 
@@ -1404,7 +1400,7 @@ fn for_body<T>(
     is_num: bool,
 ) -> Result<(), LuaError> {
     adjust_local_vars(lex, 3); // control variables
-    check_next(lex, state, Reserved::DO as u32)?;
+    check_next(lex, state, Reserved::Do as u32)?;
     let prep = if is_num {
         code_asbx(lex, state, OpCode::ForPrep as u32, base as i32, NO_JUMP)? as i32
     } else {

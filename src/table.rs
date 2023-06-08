@@ -29,12 +29,32 @@ impl Table {
         }
     }
 
+    /// Try to find a boundary in table `t'. A `boundary' is an integer index
+    /// such that t[i] is non-nil and t[i+1] is nil (and 0 if t[1] is nil).
+    pub fn len(&self) -> usize {
+        let mut j = self.array.len();
+        if j > 0 && self.array[j-1].is_nil() {
+            // there is a boundary in the array part: (binary) search for it
+            let mut i=0;
+            while j-i > 1 {
+                let m=(i+j)/2;
+                if self.array[m-1].is_nil() {j=m;}
+                else {i=m;}
+            }
+            return i;
+        } else if self.node.is_empty() {
+            return j;
+        }
+        // else must find a boundary in hash part
+        self.node.len()
+    }
     pub fn set(&mut self, key: TValue, value: TValue) {
         match key {
             TValue::Number(n) if n >= 1.0 => {
                 let n = n as usize;
                 if n > self.array.len() {
-                    self.array.resize(n, TValue::Nil);
+                    let new_size = n.max(self.array.len()*2);
+                    self.array.resize(new_size, TValue::Nil);
                 }
                 self.array[n-1] = value;
             }
@@ -45,7 +65,7 @@ impl Table {
     }
     pub fn get(&mut self, key: &TValue) -> Option<&TValue> {
         match *key {
-            TValue::Nil => return Some(&TValue::Nil),
+            TValue::Nil => Some(&TValue::Nil),
             TValue::Number(n) if n >= 1.0 => {
                 let n = n as usize;
                 if n > self.array.len() {

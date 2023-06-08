@@ -8,7 +8,7 @@ use crate::{
     opcodes::{
         create_abc, create_abx, get_arg_a, get_arg_b, get_arg_c, get_arg_sbx, get_opcode,
         is_reg_constant, set_arg_a, set_arg_b, set_arg_c, set_arg_sbx, OpCode, LFIELDS_PER_FLUSH,
-        MAXARG_C, MAXARG_SBX, MAX_INDEX_RK, NO_JUMP, NO_REG, RK_AS_K,
+        MAXARG_C, MAXARG_SBX, MAX_INDEX_RK, NO_JUMP, NO_REG, rk_as_k,
     },
     parser::{BinaryOp, ExpressionDesc, ExpressionKind, UnaryOp},
     state::LuaState,
@@ -21,22 +21,22 @@ pub(crate) fn discharge_vars<T>(
     exp: &mut ExpressionDesc,
 ) -> Result<(), LuaError> {
     match exp.k {
-        ExpressionKind::VLOCAL => exp.k = ExpressionKind::VNONRELOC,
-        ExpressionKind::VUPVAL => {
+        ExpressionKind::LocalRegister => exp.k = ExpressionKind::NonRelocable,
+        ExpressionKind::UpValue => {
             exp.info = code_abc(lex, state, OpCode::GetUpVal as u32, 0, exp.info, 0)? as i32;
-            exp.k = ExpressionKind::VRELOCABLE;
+            exp.k = ExpressionKind::Relocable;
         }
-        ExpressionKind::VGLOBAL => {
+        ExpressionKind::GlobalVar => {
             exp.info = code_abx(lex, state, OpCode::GetGlobal as u32, 0, exp.info as u32)? as i32;
-            exp.k = ExpressionKind::VRELOCABLE;
+            exp.k = ExpressionKind::Relocable;
         }
-        ExpressionKind::VINDEXED => {
+        ExpressionKind::Indexed => {
             free_reg(lex, exp.aux as u32);
             free_reg(lex, exp.info as u32);
             exp.info = code_abc(lex, state, OpCode::GetTable as u32, 0, exp.info, exp.aux)? as i32;
-            exp.k = ExpressionKind::VRELOCABLE;
+            exp.k = ExpressionKind::Relocable;
         }
-        ExpressionKind::VCALL | ExpressionKind::VVARARG => {
+        ExpressionKind::Call | ExpressionKind::VarArg => {
             set_one_ret(lex, exp);
         }
         _ => (), // there is one value available (somewhere)
@@ -46,13 +46,13 @@ pub(crate) fn discharge_vars<T>(
 
 pub(crate) fn set_one_ret<T>(lex: &mut LexState<T>, exp: &mut ExpressionDesc) {
     let fs = lex.borrow_fs(None);
-    if exp.k == ExpressionKind::VCALL {
+    if exp.k == ExpressionKind::Call {
         // expression is an open function call?
-        exp.k = ExpressionKind::VNONRELOC;
+        exp.k = ExpressionKind::NonRelocable;
         exp.info = get_arg_a(fs.f.code[exp.info as usize]) as i32;
-    } else if exp.k == ExpressionKind::VVARARG {
+    } else if exp.k == ExpressionKind::VarArg {
         set_arg_b(lex.borrow_mut_code(exp.info as usize), 2);
-        exp.k = ExpressionKind::VRELOCABLE;
+        exp.k = ExpressionKind::Relocable;
     }
 }
 
@@ -169,7 +169,7 @@ fn patch_test_reg<T>(lex: &mut LexState<T>, node: i32, reg: u32) -> bool {
     if get_opcode(*i) != OpCode::TestSet {
         return false; // cannot patch other instructions
     } else if reg != NO_REG && reg != get_arg_b(*i) {
-        set_arg_a(i, reg as u32);
+        set_arg_a(i, reg);
     } else {
         // no register to put value or register already has the value
         *i = create_abc(
@@ -189,15 +189,15 @@ pub(crate) fn store_var<T>(
     ex: &mut ExpressionDesc,
 ) -> Result<(), LuaError> {
     match var.k {
-        ExpressionKind::VLOCAL => {
+        ExpressionKind::LocalRegister => {
             free_exp(lex, ex);
             return exp2reg(lex, state, ex, var.info as u32);
         }
-        ExpressionKind::VUPVAL => {
+        ExpressionKind::UpValue => {
             let e = exp2anyreg(lex, state, ex)?;
             code_abc(lex, state, OpCode::SetupVal as u32, e as i32, var.info, 0)?;
         }
-        ExpressionKind::VGLOBAL => {
+        ExpressionKind::GlobalVar => {
             let e = exp2anyreg(lex, state, ex)?;
             code_abx(
                 lex,
@@ -207,7 +207,7 @@ pub(crate) fn store_var<T>(
                 var.info as u32,
             )?;
         }
-        ExpressionKind::VINDEXED => {
+        ExpressionKind::Indexed => {
             let e = exp2rk(lex, state, ex)?;
             code_abc(
                 lex,
@@ -233,7 +233,7 @@ pub(crate) fn indexed<T>(
     k: &mut ExpressionDesc,
 ) -> Result<(), LuaError> {
     t.aux = exp2rk(lex, state, k)? as i32;
-    t.k = ExpressionKind::VINDEXED;
+    t.k = ExpressionKind::Indexed;
     Ok(())
 }
 
@@ -244,24 +244,24 @@ pub(crate) fn exp2rk<T>(
 ) -> Result<u32, LuaError> {
     exp2val(lex, state, ex)?;
     match ex.k {
-        ExpressionKind::VKNUM
-        | ExpressionKind::VTRUE
-        | ExpressionKind::VFALSE
-        | ExpressionKind::VNIL => {
+        ExpressionKind::NumberConstant
+        | ExpressionKind::True
+        | ExpressionKind::False
+        | ExpressionKind::Nil => {
             if lex.borrow_fs(None).f.k.len() <= MAX_INDEX_RK {
                 ex.info = match ex.k {
-                    ExpressionKind::VNIL => nil_constant(lex) as i32,
-                    ExpressionKind::VKNUM => number_constant(lex, ex.nval) as i32,
-                    _ => bool_constant(lex, ex.k == ExpressionKind::VTRUE) as i32,
+                    ExpressionKind::Nil => nil_constant(lex) as i32,
+                    ExpressionKind::NumberConstant => number_constant(lex, ex.nval) as i32,
+                    _ => bool_constant(lex, ex.k == ExpressionKind::True) as i32,
                 };
-                ex.k = ExpressionKind::VK;
-                return Ok(RK_AS_K(ex.info as u32));
+                ex.k = ExpressionKind::Constant;
+                return Ok(rk_as_k(ex.info as u32));
             }
         }
-        ExpressionKind::VK => {
+        ExpressionKind::Constant => {
             if ex.info <= MAX_INDEX_RK as i32 {
                 // constant fit in argC?
-                return Ok(RK_AS_K(ex.info as u32));
+                return Ok(rk_as_k(ex.info as u32));
             }
         }
         _ => (),
@@ -305,7 +305,7 @@ pub(crate) fn exp2anyreg<T>(
     ex: &mut ExpressionDesc,
 ) -> Result<u32, LuaError> {
     discharge_vars(lex, state, ex)?;
-    if ex.k == ExpressionKind::VNONRELOC {
+    if ex.k == ExpressionKind::NonRelocable {
         if !has_jumps(ex) {
             return Ok(ex.info as u32); // exp is already in a register
         }
@@ -334,11 +334,11 @@ fn get_jump_control<T>(lex: &mut LexState<T>, pc: i32) -> &mut u32 {
 fn get_jump<T>(lex: &mut LexState<T>, jpc: i32) -> i32 {
     let fs = lex.borrow_mut_fs(None);
     let offset = get_arg_sbx(fs.f.code[jpc as usize]);
-    return if offset == NO_JUMP {
+    if offset == NO_JUMP {
         NO_JUMP
     } else {
         jpc + 1 + offset
-    };
+    }
 }
 
 pub(crate) fn exp2nextreg<T>(
@@ -359,15 +359,14 @@ fn exp2reg<T>(
     reg: u32,
 ) -> Result<(), LuaError> {
     discharge2reg(lex, state, exp, reg)?;
-    if let ExpressionKind::VJMP = exp.k {
+    if let ExpressionKind::Jump = exp.k {
         concat_jump(lex, state, &mut exp.t, exp.info)?; // put this jump in `t' list
     }
     if has_jumps(exp) {
-        let final_pc; // position after whole expression
         let mut p_f = NO_JUMP; // position of an eventual LOAD false
         let mut p_t = NO_JUMP; // position of an eventual LOAD true
         if need_value(lex, exp.t) || need_value(lex, exp.f) {
-            let fj = if let ExpressionKind::VJMP = exp.k {
+            let fj = if let ExpressionKind::Jump = exp.k {
                 NO_JUMP
             } else {
                 jump(lex, state)?
@@ -376,14 +375,14 @@ fn exp2reg<T>(
             p_t = code_label(lex, reg, 1, 0);
             patch_to_here(lex, state, fj)?;
         }
-        final_pc = get_label(lex);
+        let final_pc = get_label(lex); // position after whole expression
         patch_list_aux(lex, state, exp.f, final_pc, reg, p_f)?;
         patch_list_aux(lex, state, exp.t, final_pc, reg, p_t)?;
     }
     exp.f = NO_JUMP;
     exp.t = NO_JUMP;
     exp.info = reg as i32;
-    exp.k = ExpressionKind::VNONRELOC;
+    exp.k = ExpressionKind::NonRelocable;
     Ok(())
 }
 
@@ -413,14 +412,14 @@ pub(crate) fn set_returns<T>(
     exp: &mut ExpressionDesc,
     nresults: i32,
 ) -> Result<(), LuaError> {
-    if exp.k == ExpressionKind::VCALL {
+    if exp.k == ExpressionKind::Call {
         // expression is an open function call?
         let pc = exp.info as usize;
         set_arg_c(
             &mut lex.borrow_mut_fs(None).f.code[pc],
             (nresults + 1) as u32,
         );
-    } else if exp.k == ExpressionKind::VVARARG {
+    } else if exp.k == ExpressionKind::VarArg {
         let pc = exp.info as usize;
         {
             set_arg_b(lex.borrow_mut_code(pc), (nresults + 1) as u32);
@@ -506,18 +505,18 @@ fn discharge2reg<T>(
 ) -> Result<(), LuaError> {
     discharge_vars(lex, state, exp)?;
     match exp.k {
-        ExpressionKind::VNIL => nil(lex, state, reg as u32, 1)?,
-        ExpressionKind::VTRUE | ExpressionKind::VFALSE => {
+        ExpressionKind::Nil => nil(lex, state, reg, 1)?,
+        ExpressionKind::True | ExpressionKind::False => {
             code_abc(
                 lex,
                 state,
                 OpCode::LoadBool as u32,
                 reg as i32,
-                if exp.k == ExpressionKind::VTRUE { 1 } else { 0 },
+                if exp.k == ExpressionKind::True { 1 } else { 0 },
                 0,
             )?;
         }
-        ExpressionKind::VK => {
+        ExpressionKind::Constant => {
             code_abx(
                 lex,
                 state,
@@ -526,28 +525,28 @@ fn discharge2reg<T>(
                 exp.info as u32,
             )?;
         }
-        ExpressionKind::VKNUM => {
+        ExpressionKind::NumberConstant => {
             let kid = lex
                 .borrow_mut_fs(None)
                 .number_constant(exp.nval as LuaNumber) as u32;
             code_abx(lex, state, OpCode::LoadK as u32, reg as i32, kid)?;
         }
-        ExpressionKind::VRELOCABLE => {
+        ExpressionKind::Relocable => {
             let pc = exp.info as usize;
             set_arg_a(&mut lex.vfs[lex.fs].f.code[pc], reg);
         }
-        ExpressionKind::VNONRELOC => {
+        ExpressionKind::NonRelocable => {
             if reg != exp.info as u32 {
                 code_abc(lex, state, OpCode::Move as u32, reg as i32, exp.info, 0)?;
             }
         }
         _ => {
-            debug_assert!(exp.k == ExpressionKind::VVOID || exp.k == ExpressionKind::VJMP);
+            debug_assert!(exp.k == ExpressionKind::Void || exp.k == ExpressionKind::Jump);
             return Ok(()); //nothing to do...
         }
     }
     exp.info = reg as i32;
-    exp.k = ExpressionKind::VNONRELOC;
+    exp.k = ExpressionKind::NonRelocable;
     Ok(())
 }
 
@@ -558,7 +557,7 @@ pub(crate) fn set_list<T>(
     nelems: i32,
     to_store: i32,
 ) -> Result<(), LuaError> {
-    let c = (nelems - 1) / LFIELDS_PER_FLUSH + 1;
+    let c = (nelems - 1) / LFIELDS_PER_FLUSH as i32 + 1;
     let b = if to_store == LUA_MULTRET { 0 } else { to_store };
     debug_assert!(to_store != 0);
     if c <= MAXARG_C as i32 {
@@ -659,14 +658,14 @@ pub(crate) fn check_stack<T>(
 }
 
 fn free_exp<T>(lex: &mut LexState<T>, exp: &mut ExpressionDesc) {
-    if let ExpressionKind::VNONRELOC = exp.k {
+    if let ExpressionKind::NonRelocable = exp.k {
         free_reg(lex, exp.info as u32);
     }
 }
 
 fn free_reg<T>(lex: &mut LexState<T>, reg: u32) {
     let fs = lex.borrow_mut_fs(None);
-    if !is_reg_constant(reg as u32) && reg >= fs.nactvar as u32 {
+    if !is_reg_constant(reg) && reg >= fs.nactvar as u32 {
         fs.freereg -= 1;
         debug_assert!(reg == fs.freereg as u32);
     }
@@ -678,8 +677,49 @@ pub(crate) fn fix_line<T>(lex: &mut LexState<T>, line: usize) {
     fs.f.lineinfo[pc - 1] = line;
 }
 
-pub(crate) fn prefix<T>(_lex: &mut LexState<T>, _uop: UnaryOp, _exp: &mut ExpressionDesc) {
-    todo!()
+pub(crate) fn prefix<T>(lex: &mut LexState<T>, state: &mut LuaState,op: UnaryOp, e: &mut ExpressionDesc) -> Result<(), LuaError>{
+    let mut e2= ExpressionDesc::default();
+    e2.init(ExpressionKind::NumberConstant,0);
+    match op {
+        UnaryOp::Minus => {
+            if e.k==ExpressionKind::Constant {
+                // cannot operate on non-numeric constants
+                exp2anyreg(lex, state, e)?;
+            }
+            code_arith(lex, state, OpCode::UnaryMinus, e, &mut e2)?;
+        }
+        UnaryOp::Not => {
+            code_not(lex, state, e)?;
+        }
+        UnaryOp::Len => {
+            exp2anyreg(lex, state, e)?; // cannot operate on constants
+            code_arith(lex, state, OpCode::Len, e, &mut e2)?;
+        }
+    }
+    Ok(())
+}
+
+fn code_not<T>(lex: &mut LexState<T>, state: &mut LuaState, exp: &mut ExpressionDesc) -> Result<(),LuaError> {
+    discharge_vars(lex, state, exp)?;
+    match exp.k {
+        ExpressionKind::Nil|ExpressionKind::False => {
+            exp.k = ExpressionKind::True;
+        }
+        ExpressionKind::Constant|ExpressionKind::NumberConstant|ExpressionKind::True => {
+            exp.k = ExpressionKind::False;
+        }
+        ExpressionKind::Jump => {
+            invert_jump(lex, exp);
+        }
+        ExpressionKind::Relocable|ExpressionKind::NonRelocable => {
+            discharge2any_reg(lex, state, exp)?;
+            free_exp(lex, exp);
+            exp.info = code_abc(lex, state, OpCode::Not as u32, 0, exp.info, 0)? as i32;
+            exp.k = ExpressionKind::Relocable;
+        }
+        _ => unreachable!()
+    }
+    Ok(())
 }
 
 pub(crate) fn infix<T>(
@@ -708,15 +748,15 @@ fn go_if_false<T>(
 ) -> Result<(), LuaError> {
     discharge_vars(lex, state, exp)?;
     let pc = match exp.k {
-        ExpressionKind::VNIL | ExpressionKind::VFALSE => {
+        ExpressionKind::Nil | ExpressionKind::False => {
             // always false, do nothing
             NO_JUMP
         }
-        ExpressionKind::VTRUE => {
+        ExpressionKind::True => {
             // always jump
             jump(lex, state)?
         }
-        ExpressionKind::VJMP => exp.info,
+        ExpressionKind::Jump => exp.info,
         _ => jump_on_cond(lex, state, exp, 1)?,
     };
     concat_jump(lex, state, &mut exp.t, pc)?; // insert last jump in `t' list
@@ -730,25 +770,24 @@ fn go_if_true<T>(
     state: &mut LuaState,
     exp: &mut ExpressionDesc,
 ) -> Result<(), LuaError> {
-    let pc;
     discharge_vars(lex, state, exp)?;
-    match exp.k {
-        ExpressionKind::VK | ExpressionKind::VKNUM | ExpressionKind::VTRUE => {
+    let pc = match exp.k {
+        ExpressionKind::Constant | ExpressionKind::NumberConstant | ExpressionKind::True => {
             // always true; do nothing
-            pc = NO_JUMP;
+            NO_JUMP
         }
-        ExpressionKind::VFALSE => {
+        ExpressionKind::False => {
             // always jump
-            pc = jump(lex, state)?;
+            jump(lex, state)?
         }
-        ExpressionKind::VJMP => {
+        ExpressionKind::Jump => {
             invert_jump(lex, exp);
-            pc = exp.info as i32;
+            exp.info
         }
         _ => {
-            pc = jump_on_cond(lex, state, exp, 0)?;
+            jump_on_cond(lex, state, exp, 0)?
         }
-    }
+    };
     concat_jump(lex, state, &mut exp.f, pc)?; // insert last jump in `f' list
     patch_to_here(lex, state, exp.t)?;
     exp.t = NO_JUMP;
@@ -763,7 +802,7 @@ fn jump_on_cond<T>(
 ) -> Result<i32, LuaError> {
     {
         let fs = lex.borrow_mut_fs(None);
-        if exp.k == ExpressionKind::VRELOCABLE {
+        if exp.k == ExpressionKind::Relocable {
             let ie = fs.f.code[exp.info as usize];
             if get_opcode(ie) == OpCode::Not {
                 // remove previous OP_NOT
@@ -782,7 +821,7 @@ fn jump_on_cond<T>(
     }
     discharge2any_reg(lex, state, exp)?;
     free_exp(lex, exp);
-    return cond_jump(lex, state, OpCode::TestSet, NO_REG as i32, exp.info, cond);
+    cond_jump(lex, state, OpCode::TestSet, NO_REG as i32, exp.info, cond)
 }
 
 fn cond_jump<T>(
@@ -802,7 +841,7 @@ fn discharge2any_reg<T>(
     state: &mut LuaState,
     exp: &mut ExpressionDesc,
 ) -> Result<(), LuaError> {
-    if exp.k != ExpressionKind::VNONRELOC {
+    if exp.k != ExpressionKind::NonRelocable {
         reserve_regs(lex, state, 1)?;
         discharge2reg(lex, state, exp, lex.borrow_fs(None).freereg as u32 - 1)?;
     }
@@ -837,11 +876,11 @@ pub(crate) fn postfix<T>(
         BinaryOp::Concat => {
             exp2val(lex, state, exp2)?;
             let i2 = lex.get_code(exp2.info as usize);
-            if exp2.k == ExpressionKind::VRELOCABLE && get_opcode(i2) == OpCode::Concat {
+            if exp2.k == ExpressionKind::Relocable && get_opcode(i2) == OpCode::Concat {
                 debug_assert!(exp1.info as u32 == get_arg_b(i2) - 1);
                 free_exp(lex, exp1);
                 set_arg_b(lex.borrow_mut_code(exp2.info as usize), exp1.info as u32);
-                exp1.k = ExpressionKind::VRELOCABLE;
+                exp1.k = ExpressionKind::Relocable;
                 exp1.info = exp2.info;
             } else {
                 exp2nextreg(lex, state, exp2)?; // operand must be on the 'stack'
@@ -877,15 +916,13 @@ fn code_comp<T>(
     free_exp(lex, exp2);
     free_exp(lex, exp1);
     let cond = if cond == 0 && op != OpCode::Eq {
-        let temp = o1;
-        o1 = o2;
-        o2 = temp;
+        std::mem::swap(&mut o1, &mut o2);
         1
     } else {
         0
     };
     exp1.info = cond_jump(lex, state, op, cond, o1 as i32, o2 as i32)?;
-    exp1.k = ExpressionKind::VJMP;
+    exp1.k = ExpressionKind::Jump;
     Ok(())
 }
 
@@ -908,7 +945,7 @@ fn code_arith<T>(
     free_exp(lex, exp2);
     free_exp(lex, exp1);
     exp1.info = code_abc(lex, state, op as u32, 0, o1 as i32, o2 as i32)? as i32;
-    exp1.k = ExpressionKind::VRELOCABLE;
+    exp1.k = ExpressionKind::Relocable;
     Ok(())
 }
 

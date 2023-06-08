@@ -210,5 +210,28 @@ mod tests {
         let msg = api::to_string(&mut state,-1);
         assert_eq!(msg,Some("ia.write('hello'):1 attempt to call a nil value".to_owned()));
     }
+    #[test]
+    fn unary_minus() {
+        let mut state = luaL::newstate();
+        luaL::dostring(&mut state, "local a={x=-1,y=-2} z=a.x+a.y").unwrap();
 
+        api::get_global(&mut state, "z");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(-3.0));
+    }
+    #[test]
+    fn set_list() {
+        let mut state = luaL::newstate();
+        luaL::dostring(&mut state, "local q={2,4,6,8,10} z=q[3]").unwrap();
+
+        api::get_global(&mut state, "z");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(6.0));
+    }
+    #[test]
+    fn array_len() {
+        let mut state = luaL::newstate();
+        luaL::dostring(&mut state, "local q={2,4,6,8,10} z=#q").unwrap();
+
+        api::get_global(&mut state, "z");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(5.0));
+    }
 }

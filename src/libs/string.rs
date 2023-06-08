@@ -74,7 +74,7 @@ pub fn lib_open_string(state: &mut LuaState) -> Result<i32, ()> {
     Ok(1)
 }
 
-fn create_metatable(state: &mut LuaState) {
+fn create_metatable(_state: &mut LuaState) {
     todo!();
 }
 
@@ -172,8 +172,7 @@ pub fn str_format(s: &mut LuaState) -> Result<i32, ()> {
                     }
                 }
                 None => {
-                    luaL::error(s, &format!("invalid conversion '%' to 'format'"))
-                        .map_err(|_| ())?;
+                    luaL::error(s, "invalid conversion '%' to 'format'").map_err(|_| ())?;
                     unreachable!()
                 }
             }
@@ -223,9 +222,6 @@ mod tests {
         luaL::dostring(&mut state, "s=string.format('%d',14.3)").unwrap();
 
         api::get_global(&mut state, "s");
-        assert_eq!(
-            state.stack.last().unwrap(),
-            &TValue::from("14")
-        );
+        assert_eq!(state.stack.last().unwrap(), &TValue::from("14"));
     }
 }

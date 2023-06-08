@@ -16,10 +16,10 @@
             "externalConsole": false
         },
         {
-            "name": "spectral ex",
+            "name": "nbody ex",
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/target/debug/examples/spectral.exe",
+            "program": "${workspaceFolder}/target/debug/examples/nbody.exe",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",

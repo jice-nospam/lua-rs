@@ -85,10 +85,7 @@ impl TValue {
         Self::Table(Rc::new(RefCell::new(Table::new())))
     }
     pub fn is_nil(&self) -> bool {
-        match self {
-            TValue::Nil => true,
-            _ => false,
-        }
+        matches!(self,TValue::Nil)
     }
     pub fn get_number_value(&self) -> LuaNumber {
         match self {
@@ -97,40 +94,25 @@ impl TValue {
         }
     }
     pub fn is_number(&self) -> bool {
-        match self {
-            TValue::Number(_) => true,
-            _ => false,
-        }
+        matches!(self,TValue::Number(_))
     }
     pub fn is_string(&self) -> bool {
-        match self {
-            TValue::String(_) => true,
-            _ => false,
-        }
+        matches!(self,TValue::String(_))
     }
     pub fn is_table(&self) -> bool {
-        match self {
-            TValue::Table(_) => true,
-            _ => false,
-        }
+        matches!(self,TValue::Table(_))
     }
     pub fn is_function(&self) -> bool {
-        match self {
-            TValue::Function(_) => true,
-            _ => false,
-        }
+        matches!(self,TValue::Function(_))
     }
     pub fn is_boolean(&self) -> bool {
-        match self {
-            TValue::Boolean(_) => true,
-            _ => false,
-        }
+        matches!(self,TValue::Boolean(_))
     }
 
     pub(crate) fn is_false(&self) -> bool {
         match self {
             TValue::Nil => true,
-            TValue::Boolean(b) => *b,
+            TValue::Boolean(b) => ! *b,
             _ => false,
         }
     }
@@ -304,7 +286,7 @@ impl Closure {
     }
     pub fn get_proto_id(&self) -> usize {
         match self {
-            Closure::Rust(cl) => unreachable!(),
+            Closure::Rust(_cl) => unreachable!(),
             Closure::Lua(cl) => cl.proto,
         }
     }
@@ -324,14 +306,31 @@ impl Closure {
 
 /// identify current chunkid (file name or source code)
 pub fn chunk_id(source_name: &str) -> String {
-    if source_name.starts_with('=') {
-        source_name[1..].to_owned()
-    } else if source_name.starts_with('@') {
-        format!("{}...", &source_name[1..])
+    if let Some(stripped) = source_name.strip_prefix('=') {
+        stripped.to_owned()
+    } else if let Some(stripped) = source_name.strip_prefix('@') {
+        format!("{}...", stripped)
     } else {
         // get first line of source code
-        let len = source_name.find(&['\r', '\n']).unwrap_or(source_name.len());
+        let len = source_name.find(['\r', '\n']).unwrap_or(source_name.len());
         format!("[string \"{}...\"]", &source_name[0..len])
+    }
+}
+
+/// converts an integer to a "floating point byte", represented as
+/// (eeeeexxx), where the real value is (1xxx) * 2^(eeeee - 1) if
+/// eeeee != 0 and (xxx) otherwise.
+pub(crate) const fn int2fb(val: u32) -> u32 {
+    let mut e = 0; // exponent
+    let mut val = val;
+    while val >= 16 {
+        val = (val + 1) >> 1;
+        e += 1;
+    }
+    if val < 8 {
+        val
+    } else {
+        ((e + 1) << 3) | (val - 8)
     }
 }
 
@@ -370,22 +369,5 @@ mod tests {
         let v = h.get(&TValue::from("key"));
 
         assert_eq!(v, Some(&123));
-    }
-}
-
-/// converts an integer to a "floating point byte", represented as
-/// (eeeeexxx), where the real value is (1xxx) * 2^(eeeee - 1) if
-/// eeeee != 0 and (xxx) otherwise.
-pub(crate) const fn INT2FB(val: u32) -> u32 {
-    let mut e = 0; // exponent
-    let mut val = val;
-    while val >= 16 {
-        val = (val + 1) >> 1;
-        e += 1;
-    }
-    if val < 8 {
-        val
-    } else {
-        ((e + 1) << 3) | (val - 8)
     }
 }

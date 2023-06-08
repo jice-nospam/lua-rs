@@ -59,25 +59,22 @@ fn open_lib(
     funcs: &[LibReg],
     nupvalues: isize,
 ) -> Result<(), LuaError> {
-    match lib_name {
-        Some(lib_name) => {
-            // check whether lib already exists
-            find_table(state, LUA_REGISTRYINDEX, "_LOADED");
-            state.get_field(-1, lib_name); // get _LOADED[libname]
-            if !state.is_table(-1) {
-                // not found?
-                state.pop_stack(1); // remove previous result
-                                    // try global variable (and create one if it does not exist)
-                if find_table(state, LUA_GLOBALSINDEX, lib_name).is_some() {
-                    return error(state,&format!("name conflict for module '{}'", lib_name));
-                }
-                state.push_value(-1);
-                state.set_field(-3, lib_name); // _LOADED[libname] = new table
+    if let Some(lib_name)=  lib_name {
+        // check whether lib already exists
+        find_table(state, LUA_REGISTRYINDEX, "_LOADED");
+        state.get_field(-1, lib_name); // get _LOADED[libname]
+        if !state.is_table(-1) {
+            // not found?
+            state.pop_stack(1); // remove previous result
+                                // try global variable (and create one if it does not exist)
+            if find_table(state, LUA_GLOBALSINDEX, lib_name).is_some() {
+                return error(state,&format!("name conflict for module '{}'", lib_name));
             }
-            state.remove(-2);
-            state.insert(-(nupvalues + 1));
+            state.push_value(-1);
+            state.set_field(-3, lib_name); // _LOADED[libname] = new table
         }
-        None => (),
+        state.remove(-2);
+        state.insert(-(nupvalues + 1));
     }
     for lib_reg in funcs.iter() {
         for _ in 0..nupvalues {
@@ -92,18 +89,18 @@ fn open_lib(
 
 pub fn error(state: &mut LuaState, msg: &str) -> Result<(), LuaError> {
     lwhere(state,1);
-    state.push_string(&msg);
+    state.push_string(msg);
     api::concat(state,2)?;
     api::error(state)
 }
 
-fn lwhere(state: &mut LuaState, arg: i32) {
-    // TODO
+fn lwhere(_state: &mut LuaState, _arg: i32) {
+    todo!();
 }
 
 fn find_table(state: &mut LuaState, index: isize, name: &str) -> Option<String> {
     state.push_value(index);
-    for module in name.split(".") {
+    for module in name.split('.') {
         state.push_string(module);
         state.rawget(-2);
         if state.is_nil(-1) {
@@ -143,7 +140,7 @@ pub(crate) fn check_integer(s: &mut LuaState, index: isize) -> Result<LuaInteger
 
 pub(crate) fn check_string(s: &mut LuaState, index: isize) -> Result<String, LuaError> {
     match api::to_string(s, index) {
-        Some(s) => Ok(s.to_owned()),
+        Some(s) => Ok(s),
         None => {
             type_error(s, index, "string")?;
             unreachable!()

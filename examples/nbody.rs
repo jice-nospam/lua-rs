@@ -1,7 +1,7 @@
 use lua_rs as lua;
 use lua_rs::luaL;
 
-const LUA_SRC:&str = include_str!("../benches/lua/spectral.lua");
+const LUA_SRC:&str = include_str!("../benches/lua/nbody.lua");
 
 pub fn main() {
     let mut state = luaL::newstate();
