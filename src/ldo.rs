@@ -97,7 +97,8 @@ impl LuaState {
             unreachable!()
         };
         self.base_ci[self.ci].saved_pc = self.saved_pc;
-        match cl.as_ref() {
+        let cl=cl.borrow();
+        match &*cl {
             Closure::Lua(cl) => {
                 // Lua function. prepare its call
                 let base = if self.protos[cl.proto].is_vararg {

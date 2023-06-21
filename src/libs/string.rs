@@ -1,6 +1,6 @@
 //! Standard library for string operations and pattern-matching
 
-use crate::{luaL, state::LuaState};
+use crate::{luaL, state::LuaState, api};
 
 use super::LibReg;
 
@@ -69,20 +69,40 @@ const STR_FUNCS: [LibReg; 15] = [
 
 pub fn lib_open_string(state: &mut LuaState) -> Result<i32, ()> {
     luaL::register(state, "string", &STR_FUNCS).unwrap();
-    // TODO
-    //create_metatable(state);
+    create_metatable(state);
     Ok(1)
 }
 
-fn create_metatable(_state: &mut LuaState) {
-    todo!();
+fn create_metatable(state: &mut LuaState) {
+    api::create_table(state); // create metatable for strings
+    api::push_literal(state, ""); // dummy string
+    api::push_value(state, -2);
+    api::set_metatable(state, -2); // set string metatable
+    api::pop(state, 1); // pop dummy string
+    api::push_value(state, -2); // string library
+    api::set_field(state, -2, "__index"); // ...is the __index metamethod
+    api::pop(state,1); // pop metatable
 }
 
 pub fn str_byte(_state: &mut LuaState) -> Result<i32, ()> {
     todo!();
 }
-pub fn str_char(_state: &mut LuaState) -> Result<i32, ()> {
-    todo!();
+
+/// Receives zero or more integers.
+/// Returns a string with length equal to the number of arguments, in which each character has the internal numerical code equal to its corresponding argument.
+/// Note that numerical codes are not necessarily portable across platforms
+pub fn str_char(state: &mut LuaState) -> Result<i32, ()> {
+    let n=api::get_top(state) as isize; // number of arguments
+    let mut s=String::new();
+    for i in 1..=n {
+        let c = luaL::check_integer(state, i).map_err(|_| ())?;
+        match char::from_u32(c as u32) {
+            Some(c) => s.push(c),
+            None => luaL::arg_error(state, i, "invalid value").map_err(|_| ())?,
+        }
+    }
+    state.push_string(&s);
+    Ok(1)
 }
 pub fn str_dump(_state: &mut LuaState) -> Result<i32, ()> {
     todo!();
@@ -223,5 +243,14 @@ mod tests {
 
         api::get_global(&mut state, "s");
         assert_eq!(state.stack.last().unwrap(), &TValue::from("14"));
+    }
+    #[test]
+    fn string_char() {
+        let mut state = luaL::newstate();
+        luaL::open_libs(&mut state).unwrap();
+        luaL::dostring(&mut state, "s=string.char(72,101,108,108,111)").unwrap();
+
+        api::get_global(&mut state, "s");
+        assert_eq!(state.stack.last().unwrap(), &TValue::from("Hello"));
     }
 }

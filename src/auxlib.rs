@@ -3,7 +3,7 @@
 use crate::{
     api::{self, LuaError},
     state::LuaState,
-    LuaInteger, LuaNumber, LUA_GLOBALSINDEX, LUA_MULTRET, LUA_REGISTRYINDEX,
+    LuaInteger, LuaNumber, LUA_GLOBALSINDEX, LUA_MULTRET, LUA_REGISTRYINDEX, object::TValue,
 };
 
 pub use crate::libs::*;
@@ -73,17 +73,18 @@ fn open_lib(
             state.push_value(-1);
             state.set_field(-3, lib_name); // _LOADED[libname] = new table
         }
-        state.remove(-2);
-        state.insert(-(nupvalues + 1));
+        state.remove(-2); // remove _LOADED table
+        state.insert(-(nupvalues + 1)); // move library table to below upvalues
     }
     for lib_reg in funcs.iter() {
         for _ in 0..nupvalues {
-            state.push_value(-nupvalues);
+            state.push_value(-nupvalues); // copy upvalues to the top
         }
         state.push_rust_closure(lib_reg.func, nupvalues as usize);
         state.set_field(-(nupvalues + 2), lib_reg.name);
+        //println!("register {}.{}",lib_name.unwrap_or(""),lib_reg.name);
     }
-    state.pop_stack(nupvalues as usize);
+    state.pop_stack(nupvalues as usize); // remove upvalues
     Ok(())
 }
 
@@ -118,8 +119,8 @@ fn find_table(state: &mut LuaState, index: isize, name: &str) -> Option<String> 
     None
 }
 
-pub fn typename(s: &LuaState, index: isize) -> &str {
-    s.index2adr(index).get_type_name()
+pub fn typename(s: &LuaState, index: isize) -> String {
+    s.index2adr(index).get_type_name().to_owned()
 }
 
 pub(crate) fn check_number(s: &mut LuaState, index: isize) -> Result<LuaNumber, LuaError> {
@@ -147,6 +148,14 @@ pub(crate) fn check_string(s: &mut LuaState, index: isize) -> Result<String, Lua
         }
     }
 }
+
+pub(crate) fn check_table(s: &mut LuaState, index: isize) -> Result<(), LuaError> {
+    match s.index2adr(index) {
+        TValue::Table(_) => Ok(()),
+        _ => type_error(s, index, "table"),
+    }
+}
+
 pub(crate) fn type_error(s: &mut LuaState, index: isize, expected_type: &str) -> Result<(), LuaError> {
     let value = s.index2adr(index);
     let tname = value.get_type_name();
@@ -159,4 +168,17 @@ pub(crate) fn arg_error(state: &mut LuaState, narg: isize, extra_msg: &str) -> R
     // TODO
     state.push_string(&format!("bad argument #{} ({})", narg, extra_msg));
     Err(LuaError::RuntimeError)
+}
+
+pub(crate) fn opt_int(state: &mut LuaState, narg: i32, default_value: i32) -> i32 {
+    check_integer(state, narg as isize).map(|n| n as i32).unwrap_or(default_value)
+}
+
+pub(crate) fn obj_len(state: &mut LuaState, idx: i32) -> usize {
+    match state.index2adr(idx as isize) {
+        TValue::String(s) => s.len(),
+        TValue::UserData(_udref) => todo!(),
+        TValue::Table(tref) => tref.borrow().len(),
+        _ => 0,
+    }
 }

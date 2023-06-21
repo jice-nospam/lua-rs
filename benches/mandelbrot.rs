@@ -6,12 +6,12 @@ use criterion::Criterion;
 use lua_rs::luaL;
 
 macro_rules! bench_name {
-    () => ( "nbody" )
+    () => ( "mandelbrot" )
 }
 
 const BENCH_SRC:&str = include_str!(concat!("lua/",bench_name!(),".lua"));
 
-pub fn nbody_luars(c: &mut Criterion) {
+pub fn mandelbrot_luars(c: &mut Criterion) {
     let mut state = luaL::newstate();
     luaL::open_libs(&mut state).unwrap();
     c.bench_function(concat!(bench_name!()," lua-rs"), |b| {
@@ -21,7 +21,7 @@ pub fn nbody_luars(c: &mut Criterion) {
     });
 }
 
-pub fn nbody_rlua(c: &mut Criterion) {
+pub fn mandelbrot_rlua(c: &mut Criterion) {
     let lua = rlua::Lua::new();
         c.bench_function(concat!(bench_name!()," rlua"), |b| {
         b.iter(|| {

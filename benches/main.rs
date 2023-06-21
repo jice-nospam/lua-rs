@@ -1,18 +1,26 @@
 mod nbody;
 mod spectral;
+mod mandelbrot;
+mod binary_trees;
 
 #[macro_use]
 extern crate criterion;
 
 
-use nbody::{bench_nbody_luars, bench_nbody_rlua};
-use spectral::{bench_spectral_luars, bench_spectral_rlua};
+use nbody::{nbody_luars, nbody_rlua};
+use spectral::{spectral_luars, spectral_rlua};
+use mandelbrot::{mandelbrot_luars,mandelbrot_rlua};
+use binary_trees::{binary_trees_luars,binary_trees_rlua};
 
 criterion_group!(
     benches,
-    bench_spectral_luars,
-    bench_spectral_rlua,
-    bench_nbody_luars,
-    bench_nbody_rlua
+    spectral_luars,
+    spectral_rlua,
+    nbody_luars,
+    nbody_rlua,
+    mandelbrot_luars,
+    mandelbrot_rlua,
+    binary_trees_luars,
+    binary_trees_rlua,
 );
 criterion_main!(benches);

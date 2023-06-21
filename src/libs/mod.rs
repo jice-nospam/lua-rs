@@ -1,29 +1,46 @@
 //! Initialization of libraries for lua
 mod base;
-mod string;
-mod maths;
 mod io;
-use crate::{LuaRustFunction,  api::LuaError, state::LuaState};
+mod maths;
+mod string;
+mod table;
+use crate::{api::LuaError, state::LuaState, LuaRustFunction};
 
-use self::{base::lib_open_base, string::lib_open_string, maths::lib_open_math, io::lib_open_io};
+use self::{base::lib_open_base, io::lib_open_io, maths::lib_open_math, string::lib_open_string, table::lib_open_table};
 
 pub struct LibReg<'a> {
     pub name: &'a str,
-    pub func : LuaRustFunction,
+    pub func: LuaRustFunction,
 }
 
-const LUA_LIBS:[LibReg;4] =[
-    LibReg {name:"", func: lib_open_base},
-    LibReg {name:"string", func: lib_open_string},
-    LibReg {name:"math", func: lib_open_math},
-    LibReg {name:"io", func: lib_open_io},
+const LUA_LIBS: [LibReg; 5] = [
+    LibReg {
+        name: "",
+        func: lib_open_base,
+    },
+    LibReg {
+        name: "string",
+        func: lib_open_string,
+    },
+    LibReg {
+        name: "math",
+        func: lib_open_math,
+    },
+    LibReg {
+        name: "io",
+        func: lib_open_io,
+    },
+    LibReg {
+        name: "table",
+        func: lib_open_table,
+    },
 ];
 
-pub fn open_libs(state:&mut LuaState) -> Result<(), LuaError> {
+pub fn open_libs(state: &mut LuaState) -> Result<(), LuaError> {
     for reg in LUA_LIBS.iter() {
         state.push_rust_function(reg.func);
         state.push_string(reg.name);
-        state.call(1,0)?;
+        state.call(1, 0)?;
     }
     Ok(())
 }
@@ -48,6 +65,10 @@ mod tests {
         let mut l_gt = state.l_gt.borrow_mut();
         let print = l_gt.get(&TValue::from("print"));
         assert!(print.is_some());
-        assert!(if let Some(TValue::Function(_)) = print { true } else {false});
+        assert!(if let Some(TValue::Function(_)) = print {
+            true
+        } else {
+            false
+        });
     }
 }

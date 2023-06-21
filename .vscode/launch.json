@@ -16,10 +16,10 @@
             "externalConsole": false
         },
         {
-            "name": "nbody ex",
+            "name": "bintree ex",
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/target/debug/examples/nbody.exe",
+            "program": "${workspaceFolder}/target/debug/examples/binary_trees.exe",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",

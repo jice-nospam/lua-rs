@@ -63,6 +63,12 @@ impl Table {
             }
         }
     }
+    pub fn get_num(&mut self, key: usize) -> &TValue {
+        if key > self.array.len() {
+            self.array.resize(key, TValue::Nil);
+        }
+        &self.array[key-1]
+    }
     pub fn get(&mut self, key: &TValue) -> Option<&TValue> {
         match *key {
             TValue::Nil => Some(&TValue::Nil),

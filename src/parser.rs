@@ -5,7 +5,7 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc};
 use crate::{
     api::LuaError,
     ldo::SParser,
-    lex::{LexState, Reserved, SemInfo},
+    lex::{LexState, Reserved, SemInfo, Token},
     luaK::{
         self, code_abc, code_abx, code_asbx, exp2anyreg, exp2nextreg, exp2rk, fix_line, indexed,
         patch_list, patch_to_here, reserve_regs, ret, set_list, set_mult_ret, store_var,
@@ -78,7 +78,7 @@ pub struct UpValDesc {
 }
 
 /// nodes for block list (list of active blocks)
-struct BlockCnt {
+pub(crate) struct BlockCnt {
     /// list of jumps out of this loop
     breaklist: i32,
     /// # active locals outside the breakable structure
@@ -123,7 +123,7 @@ pub struct FuncState {
     /// enclosing function
     prev: Option<usize>,
     /// chain of current blocks
-    bl: Vec<BlockCnt>,
+    pub(crate) bl: Vec<BlockCnt>,
     /// next position to code
     pub pc: usize,
     /// `pc' of last `jump target'
@@ -159,6 +159,18 @@ impl FuncState {
             upvalues: Vec::new(),
             actvar: [0; LUAI_MAXVARS],
         }
+    }
+
+    pub(crate) fn get_break_upval(&self) -> Option<(bool, usize)> {
+        let mut upval=false;
+        for (i,bl) in self.bl.iter().rev().enumerate() {
+            if ! bl.is_breakable {
+                upval = upval || bl.upval;
+            } else {
+                return Some((upval,i));
+            }
+        }
+        None
     }
 
     fn search_var(&self, name: &str) -> Option<usize> {
@@ -290,7 +302,7 @@ fn statement<T>(lex: &mut LexState<T>, state: &mut LuaState) -> Result<bool, Lua
     if let Some(ref t) = lex.t {
         match Reserved::try_from(t.token) {
             Ok(Reserved::If) => {
-                if_stat(lex, line)?;
+                if_stat(lex, state, line)?;
                 return Ok(false);
             }
             Ok(Reserved::While) => {
@@ -324,14 +336,16 @@ fn statement<T>(lex: &mut LexState<T>, state: &mut LuaState) -> Result<bool, Lua
                 }
                 return Ok(false);
             }
+            //  stat -> retstat
             Ok(Reserved::Return) => {
                 return_stat(lex, state, line)?;
-                return Ok(true);
+                return Ok(true); // must be last statement
             }
+            // stat -> breakstat
             Ok(Reserved::Break) => {
-                lex.next_token(state)?;
-                break_stat(lex, line)?;
-                return Ok(true);
+                lex.next_token(state)?; // skip BREAK
+                break_stat(lex, state)?;
+                return Ok(true); // must be last statement
             }
             _ => {
                 expr_stat(lex, state)?;
@@ -461,6 +475,7 @@ fn assignment<T>(
             check_conflict(lex, &exp, lhs)?;
         }
         assignment(lex, state, lhs, nvars + 1)?;
+        lhs.pop();
     } else {
         // assignment -> `=' explist1
         check_next(lex, state, '=' as u32)?;
@@ -1131,8 +1146,21 @@ fn binary_op(t: &Option<crate::lex::Token>) -> Option<BinaryOp> {
     }
 }
 
-fn break_stat<T>(_lex: &mut LexState<T>, _line: usize) -> Result<(), LuaError> {
-    todo!()
+fn break_stat<T>(lex: &mut LexState<T>, state: &mut LuaState) -> Result<(), LuaError> {
+    let bl = match lex.borrow_fs(None).get_break_upval() {
+        None => return lex.syntax_error(state, "no loop to break"),
+        Some((upval,bl)) if upval => {
+            let nactvar = lex.borrow_fs(None).bl[bl].nactvar;
+            luaK::code_abc(lex, state, OpCode::Close as u32, nactvar as i32, 0,0)?;
+            bl
+        },
+        Some((_,bl))=> bl,
+    };
+    let l2=luaK::jump(lex, state)?;
+    let mut break_list=lex.borrow_fs(None).bl[bl].breaklist;
+    luaK::concat(lex, state, &mut break_list, l2)?;
+    lex.borrow_mut_fs(None).bl[bl].breaklist = break_list;
+    Ok(())
 }
 
 /// stat -> RETURN explist
@@ -1483,6 +1511,45 @@ fn while_stat<T>(_lex: &mut LexState<T>, _line: usize) -> Result<(), LuaError> {
     todo!()
 }
 
-fn if_stat<T>(_lex: &mut LexState<T>, _line: usize) -> Result<(), LuaError> {
-    todo!()
+/// ifstat -> IF cond THEN block {ELSEIF cond THEN block} [ELSE block] END
+fn if_stat<T>(lex: &mut LexState<T>, state: &mut LuaState, line: usize) -> Result<(), LuaError> {
+    let mut escape_list = NO_JUMP;
+    let mut flist = test_then_block(lex, state)?; // IF cond THEN block
+    while lex.is_token(Reserved::ElseIf as u32) {
+        let l2=luaK::jump(lex, state)?;
+        luaK::concat(lex, state, &mut escape_list, l2)?;
+        luaK::patch_to_here(lex, state, flist)?;
+        flist = test_then_block(lex, state)?; // ELSEIF cond THEN block
+    }
+    if lex.is_token(Reserved::Else as u32) {
+        let l2=luaK::jump(lex, state)?;
+        luaK::concat(lex, state, &mut escape_list, l2)?;
+        luaK::patch_to_here(lex, state, flist)?;
+        lex.next_token(state)?; // skip ELSE (after patch, for correct line info)
+        block(lex, state)?; // `else' part
+    } else {
+        luaK::concat(lex, state, &mut escape_list, flist)?;
+    }
+    luaK::patch_to_here(lex, state, escape_list)?;
+    check_match(lex, state, Reserved::End as u32, Reserved::If as u32, line)
+}
+
+/// test_then_block -> [IF | ELSEIF] cond THEN block
+fn test_then_block<T>(lex: &mut LexState<T>, state: &mut LuaState) -> Result<i32, LuaError> {
+    lex.next_token(state)?; // skip IF or ELSEIF
+    let cond_exit = cond(lex,state)?;
+    check_next(lex, state, Reserved::Then as u32)?;
+    block(lex, state)?;
+    Ok(cond_exit)
+}
+
+/// cond -> exp
+fn cond<T>(lex: &mut LexState<T>, state: &mut LuaState) -> Result<i32, LuaError> {
+    let mut v = ExpressionDesc::default();
+    expr(lex, state, &mut v)?; // read condition
+    if v.k == ExpressionKind::Nil {
+        v.k = ExpressionKind::False; // `falses' are all equal here
+    }
+    luaK::go_if_true(lex, state, &mut v)?;
+    Ok(v.f)
 }

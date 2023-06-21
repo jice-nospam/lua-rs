@@ -269,8 +269,20 @@ pub fn luab_tostring(s: &mut LuaState) -> Result<i32, ()> {
 pub fn luab_type(_state: &mut LuaState) -> Result<i32, ()> {
     todo!();
 }
-pub fn luab_unpack(_state: &mut LuaState) -> Result<i32, ()> {
-    todo!();
+pub fn luab_unpack(state: &mut LuaState) -> Result<i32, ()> {
+    luaL::check_table(state, 1).map_err(|_| ())?;
+    let mut i=luaL::opt_int(state,2,1);
+    let len=luaL::obj_len(state,1);
+    let e = luaL::opt_int(state,3,len as i32);
+    let n=e-i+1; // number of elements
+    if n <= 0 {
+        return Ok(0); // empty range
+    }
+    while i <= e {
+        api::raw_get_i(state,1,i);
+        i+=1;
+    }
+    Ok(n)
 }
 pub fn luab_xpcall(_state: &mut LuaState) -> Result<i32, ()> {
     todo!();
@@ -326,11 +338,21 @@ fn auxopen(state: &mut LuaState, name: &str, f: LuaRustFunction, u: LuaRustFunct
 
 #[cfg(test)]
 mod tests {
-    use crate::luaL;
+    use crate::{luaL, object::TValue, api};
     #[test]
     fn print_vararg() {
         let mut state = luaL::newstate();
         luaL::open_libs(&mut state).unwrap();
         luaL::dostring(&mut state, "print('hello',' ','world')").unwrap();
+    }
+    #[test]
+    fn unpack() {
+        let mut state = luaL::newstate();
+        luaL::open_libs(&mut state).unwrap();
+        luaL::dostring(&mut state, "a,b=unpack({3,5})").unwrap();
+        api::get_global(&mut state, "a");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(3.0));
+        api::get_global(&mut state, "b");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(5.0));
     }
 }

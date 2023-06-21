@@ -54,7 +54,7 @@ fn get_obj_name(state: &mut LuaState, _id: usize) -> (Option<String>, Option<Str
     let funcvalue = &state.stack[ci.func];
     match funcvalue {
         TValue::Function(cl) => {
-            match cl.as_ref() {
+            match &*cl.borrow() {
                 Closure::Lua(_cl) => {
                     // TODO
                     (None, None)
@@ -63,5 +63,15 @@ fn get_obj_name(state: &mut LuaState, _id: usize) -> (Option<String>, Option<Str
             }
         }
         _ => (None, None),
+    }
+}
+
+pub(crate) fn order_error(state: &mut LuaState, rkb: &TValue, rkc: &TValue) -> Result<(), LuaError> {
+    let t1=rkb.get_type_name();
+    let t2=rkc.get_type_name();
+    if t1 == t2 {
+        state.run_error(&format!("attempt to compare two {} values", t1))
+    } else {
+        state.run_error(&format!("attempt to compare {} with {}",t1,t2))
     }
 }

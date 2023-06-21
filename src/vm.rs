@@ -1,5 +1,7 @@
 //! Lua virtual machine
 
+use std::{rc::Rc, cell::RefCell};
+
 use crate::{
     api,
     api::LuaError,
@@ -17,24 +19,57 @@ use crate::{
 use crate::{debug_println, limits::Instruction, opcodes::OPCODE_NAME};
 
 macro_rules! arith_op {
-    ($op: tt, $opcode: expr, $cl: expr, $state: expr,$i:expr,$base:expr,$ra: expr,$pc:expr) => {
+    ($op: tt, $opcode: expr, $protoid: expr, $state: expr,$i:expr,$base:expr,$ra: expr,$pc:expr) => {
         {
             let b=get_arg_b($i);
             let rbi = ($base + b) as usize;
             let rb = if rk_is_k(b) {
-                $state.get_lua_constant($cl.get_proto_id(), (b&!BIT_RK) as usize)
+                $state.get_lua_constant($protoid, (b&!BIT_RK) as usize)
             } else {
                 $state.stack[rbi].clone()
             };
             let c=get_arg_c($i);
             let rci = ($base + c) as usize;
             let rc = if rk_is_k(c) {
-                $state.get_lua_constant($cl.get_proto_id(),(c&!BIT_RK) as usize)
+                $state.get_lua_constant($protoid,(c&!BIT_RK) as usize)
             } else {
                 $state.stack[rci].clone()
             };
             if rb.is_number() && rc.is_number() {
                 let val = rb.get_number_value() $op rc.get_number_value();
+                if $ra as usize == $state.stack.len() {
+                    $state.stack.push(TValue::Number(val));
+                } else {
+                    $state.stack[$ra as usize] = TValue::Number(val);
+                }
+            } else {
+                $state.saved_pc = $pc;
+                arith($state, $ra, rbi, rci, $opcode)?;
+                $base = $state.base as u32;
+            }
+        }
+    }
+}
+
+macro_rules! arith_func {
+    ($func: tt, $opcode: expr, $protoid: expr, $state: expr,$i:expr,$base:expr,$ra: expr,$pc:expr) => {
+        {
+            let b=get_arg_b($i);
+            let rbi = ($base + b) as usize;
+            let rb = if rk_is_k(b) {
+                $state.get_lua_constant($protoid, (b&!BIT_RK) as usize)
+            } else {
+                $state.stack[rbi].clone()
+            };
+            let c=get_arg_c($i);
+            let rci = ($base + c) as usize;
+            let rc = if rk_is_k(c) {
+                $state.get_lua_constant($protoid,(c&!BIT_RK) as usize)
+            } else {
+                $state.stack[rci].clone()
+            };
+            if rb.is_number() && rc.is_number() {
+                let val = rb.get_number_value().$func(rc.get_number_value());
                 $state.stack[$ra as usize] = TValue::Number(val);
             } else {
                 $state.saved_pc = $pc;
@@ -46,21 +81,33 @@ macro_rules! arith_op {
 }
 
 impl LuaState {
+
+    #[cfg(feature = "debug_logs")]
+    /// disassemble current instruction
+    fn dump_debug_log(&self, func: usize, first: bool, pc: usize, i: u32) {
+        let cl = if let TValue::Function(cl) = &self.stack[func] {
+            cl.borrow()
+        } else {
+            unreachable!()
+        };
+        if let Closure::Lua(cl_lua) = &*cl {
+            if first {
+                dump_function_header(self, cl_lua);
+            }
+        } else {
+            unreachable!()
+        };
+        if let Closure::Lua(cl_lua) = &*cl {
+            debug_println!("[{:04x}] {}", pc, &disassemble(self, i, cl_lua));
+        }
+    }
+
     pub(crate) fn vexecute(&mut self, nexec_calls: i32) -> Result<(), LuaError> {
         let mut nexec_calls = nexec_calls;
         'reentry: loop {
             let func = self.base_ci[self.ci].func;
             let mut pc = self.saved_pc;
-            let cl = if let TValue::Function(cl) = &self.stack[func] {
-                cl.clone()
-            } else {
-                unreachable!()
-            };
-            let protoid = if let Closure::Lua(cl_lua) = &*cl {
-                cl_lua.proto
-            } else {
-                unreachable!()
-            };
+            let protoid = self.get_lua_closure_protoid(func);
             let mut base = self.base as u32;
             #[cfg(feature = "debug_logs")]
             let mut first = true;
@@ -69,17 +116,8 @@ impl LuaState {
                 let i = self.protos[protoid].code[pc];
                 #[cfg(feature = "debug_logs")]
                 {
-                    if let Closure::Lua(cl_lua) = &*cl {
-                        if first {
-                            dump_function_header(self, cl_lua);
-                            first = false;
-                        }
-                    } else {
-                        unreachable!()
-                    };
-                    if let Closure::Lua(cl_lua) = &*cl {
-                        debug_println!("[{:04x}] {}", pc, &disassemble(self, i, cl_lua));
-                    }
+                    self.dump_debug_log(func,first,pc,i);
+                    first=false;
                 }
                 pc += 1;
                 // TODO handle hooks
@@ -99,7 +137,7 @@ impl LuaState {
                     }
                     OpCode::LoadK => {
                         let kid = get_arg_bx(i);
-                        let kname = self.get_lua_constant(cl.get_proto_id(), kid as usize);
+                        let kname = self.get_lua_constant(protoid, kid as usize);
                         let rai = ra as usize;
                         if rai == self.stack.len() {
                             self.stack.push(kname.clone());
@@ -118,15 +156,16 @@ impl LuaState {
                     OpCode::LoadNil => todo!(),
                     OpCode::GetUpVal => {
                         let b = get_arg_b(i);
-                        self.stack[ra as usize] = cl.get_lua_upvalue(b as usize);
+                        self.stack[ra as usize] = self.get_lua_closure_upvalue(func, b as usize);
                     }
                     OpCode::GetGlobal => {
                         let kid = get_arg_bx(i);
-                        let kname = self.get_lua_constant(cl.get_proto_id(), kid as usize);
+                        let kname = self.get_lua_constant(protoid, kid as usize);
                         self.saved_pc = pc;
+                        let env = self.get_lua_closure_env_value(func);
                         Self::get_tablev2(
                             &mut self.stack,
-                            cl.get_envvalue(),
+                            &env,
                             &kname,
                             Some(ra as usize),
                         );
@@ -135,39 +174,27 @@ impl LuaState {
                     OpCode::GetTable => {
                         self.saved_pc = pc;
                         let tableid = (base + get_arg_b(i)) as usize;
-                        let c = get_arg_c(i);
-                        let key = if rk_is_k(c) {
-                            self.get_lua_constant(cl.get_proto_id(), (c & !BIT_RK) as usize)
-                        } else {
-                            self.stack[(base + c) as usize].clone()
-                        };
+                        let key = self.get_rkc(i,base,protoid);
                         Self::get_tablev(&mut self.stack, tableid, &key, Some(ra as usize));
                         base = self.base as u32;
                     }
                     OpCode::SetGlobal => {
-                        let g = cl.get_env();
+                        let g = self.get_lua_closure_env(func);
                         let kid = get_arg_bx(i) as usize;
-                        let key = self.get_lua_constant(cl.get_proto_id(), kid);
+                        let key = self.get_lua_constant(protoid, kid);
                         self.saved_pc = pc;
                         let value = self.stack[ra as usize].clone();
                         self.set_tablev(&TValue::from(&g), key, value);
                         base = self.base as u32;
                     }
-                    OpCode::SetupVal => todo!(),
+                    OpCode::SetupVal => {
+                        let b = get_arg_b(i);
+                        self.set_lua_closure_upvalue(func, b as usize, self.stack[ra as usize].clone());
+                    },
                     OpCode::SetTable => {
                         self.saved_pc = pc;
-                        let b = get_arg_b(i);
-                        let c = get_arg_c(i);
-                        let key = if rk_is_k(b) {
-                            self.get_lua_constant(cl.get_proto_id(), (b & !BIT_RK) as usize)
-                        } else {
-                            self.stack[(base + b) as usize].clone()
-                        };
-                        let value = if rk_is_k(c) {
-                            self.get_lua_constant(cl.get_proto_id(), (c & !BIT_RK) as usize)
-                        } else {
-                            self.stack[(base + c) as usize].clone()
-                        };
+                        let key = self.get_rkb(i, base, protoid);
+                        let value = self.get_rkc(i, base, protoid);
                         self.set_tablev(&self.stack[ra as usize], key, value);
                         base = self.base as u32;
                     }
@@ -177,12 +204,12 @@ impl LuaState {
                         base = self.base as u32;
                     }
                     OpCode::OpSelf => todo!(),
-                    OpCode::Add => arith_op!(+,OpCode::Add,cl,self,i,base,ra,pc),
-                    OpCode::Sub => arith_op!(-,OpCode::Sub,cl,self,i,base,ra,pc),
-                    OpCode::Mul => arith_op!(*,OpCode::Mul,cl,self,i,base,ra,pc),
-                    OpCode::Div => arith_op!(/,OpCode::Div,cl,self,i,base,ra,pc),
-                    OpCode::Mod => arith_op!(%,OpCode::Mod,cl,self,i,base,ra,pc),
-                    OpCode::Pow => todo!(),
+                    OpCode::Add => arith_op!(+,OpCode::Add,protoid,self,i,base,ra,pc),
+                    OpCode::Sub => arith_op!(-,OpCode::Sub,protoid,self,i,base,ra,pc),
+                    OpCode::Mul => arith_op!(*,OpCode::Mul,protoid,self,i,base,ra,pc),
+                    OpCode::Div => arith_op!(/,OpCode::Div,protoid,self,i,base,ra,pc),
+                    OpCode::Mod => arith_op!(%,OpCode::Mod,protoid,self,i,base,ra,pc),
+                    OpCode::Pow => arith_func!(powf,OpCode::Pow,protoid, self, i,base,ra,pc),
                     OpCode::UnaryMinus => {
                         let rb = (base + get_arg_b(i)) as usize;
                         match &self.stack[rb] {
@@ -218,19 +245,54 @@ impl LuaState {
                         }
                     },
                     OpCode::Concat => todo!(),
-                    OpCode::Jmp => todo!(),
-                    OpCode::Eq => todo!(),
-                    OpCode::Lt => todo!(),
-                    OpCode::Le => todo!(),
+                    OpCode::Jmp => {
+                        let jmp = get_arg_sbx(i);
+                        pc = ((pc as i32) + jmp) as usize;
+                    },
+                    OpCode::Eq => {
+                        let rkb = self.get_rkb(i,base,protoid);
+                        let rkc = self.get_rkc(i,base,protoid);
+                        self.saved_pc = pc;
+                        let a=get_arg_a(i) > 0;
+                        if equal_obj(self,rkb,rkc) == a {
+                            let i2=self.protos[protoid].code[pc];
+                            let jmp=get_arg_sbx(i2);
+                            pc = ((pc as i32) + jmp) as usize;
+                        }
+                        pc+=1;
+                        base=self.base as u32;
+                    },
+                    OpCode::Lt => {
+                        self.saved_pc = pc;
+                        let rkb = self.get_rkb(i,base,protoid);
+                        let rkc = self.get_rkc(i,base,protoid);
+                        let a=get_arg_a(i) > 0;
+                        if less_than(self, rkb, rkc)? == a {
+                            let i2=self.protos[protoid].code[pc];
+                            let jmp=get_arg_sbx(i2);
+                            pc = ((pc as i32) + jmp) as usize;
+                        }
+                        pc += 1;
+                        base=self.base as u32;
+                    },
+                    OpCode::Le => {
+                        self.saved_pc = pc;
+                        let rkb = self.get_rkb(i,base,protoid);
+                        let rkc = self.get_rkc(i,base,protoid);
+                        let a=get_arg_a(i) > 0;
+                        if less_equal(self, rkb, rkc)? == a {
+                            let i2=self.protos[protoid].code[pc];
+                            let jmp=get_arg_sbx(i2);
+                            pc = ((pc as i32) + jmp) as usize;
+                        }
+                        pc+=1;
+                        base=self.base as u32;
+                    },
                     OpCode::Test => {
                         let is_false = get_arg_c(i) != 0;
-                        let pci = if let Closure::Lua(cl_lua) = &*cl {
-                            self.protos[cl_lua.proto].code[pc]
-                        } else {
-                            unreachable!()
-                        };
                         if self.stack[ra as usize].is_false() != is_false {
-                            let jump = get_arg_sbx(pci);
+                            let i2=self.protos[protoid].code[pc];
+                            let jump = get_arg_sbx(i2);
                             pc = (pc as i32 + jump) as usize;
                         }
                         pc += 1;
@@ -251,7 +313,7 @@ impl LuaState {
                             }
                             Ok(PrecallStatus::Rust) => {
                                 // it was a Rust function (`precall' called it); adjust results
-                                if nresults > 0 {
+                                if nresults > 0 && self.stack.len() > self.base_ci[self.ci].top {
                                     self.stack.resize(self.base_ci[self.ci].top, TValue::Nil);
                                 }
                                 base = self.base as u32;
@@ -340,11 +402,7 @@ impl LuaState {
                             self.stack.resize(self.base_ci[self.ci].top, TValue::Nil);
                         }
                         if c == 0 {
-                            c = if let Closure::Lua(cl_lua) = &*cl {
-                                self.protos[cl_lua.proto].code[pc]
-                            } else {
-                                unreachable!()
-                            };
+                            c = self.protos[protoid].code[pc];
                             pc+=1;
                         }
                         let mut last = (c-1)*LFIELDS_PER_FLUSH + n;
@@ -359,43 +417,69 @@ impl LuaState {
                     },
                     OpCode::Close => todo!(),
                     OpCode::Closure => {
-                        let pci = if let Closure::Lua(cl_lua) = &*cl {
-                            self.protos[cl_lua.proto].code[pc]
-                        } else {
-                            unreachable!()
-                        };
-                        if let Closure::Lua(cl) = &*cl {
-                            let pid = get_arg_bx(i);
-                            let pid = self.protos[cl.proto].p[pid as usize];
-                            let p = &self.protos[pid];
-                            let nup = p.nups;
-                            let mut ncl = LClosure::new(pid, cl.env.clone());
-                            for _ in 0..nup {
-                                if get_opcode(pci) == OpCode::GetUpVal {
-                                    let upvalid = get_arg_b(pci);
-                                    ncl.upvalues.push(cl.upvalues[upvalid as usize].clone());
-                                } else {
-                                    debug_assert!(get_opcode(pci) == OpCode::Move);
-                                    let b = get_arg_b(pci);
-                                    ncl.upvalues.push(Self::find_upval(
-                                        &mut self.open_upval,
-                                        &mut self.stack,
-                                        base + b,
-                                    ));
-                                }
+                        let pid = get_arg_bx(i);
+                        let pid = self.protos[protoid].p[pid as usize];
+                        let p = &self.protos[pid];
+                        let nup = p.nups;
+                        let ncl = Rc::new(RefCell::new(Closure::Lua(LClosure::new(pid, self.get_lua_closure_env(func)))));
+                        self.stack[ra as usize] = TValue::Function(ncl.clone());
+                        let mut ncl=ncl.borrow_mut();
+                        for _ in 0..nup {
+                            let pci = self.protos[protoid].code[pc];
+                            if get_opcode(pci) == OpCode::GetUpVal {
+                                let upvalid = get_arg_b(pci);
+                                let upval=self.get_lua_closure_upval_desc(func, upvalid as usize);
+                                ncl.add_lua_upvalue(upval);
+                            } else {
+                                debug_assert!(get_opcode(pci) == OpCode::Move);
+                                let b = get_arg_b(pci);
+                                ncl.add_lua_upvalue(Self::find_upval(
+                                    &mut self.open_upval,
+                                    &mut self.stack,
+                                    base + b,
+                                ));
                             }
-                            self.stack[ra as usize] = TValue::from(ncl);
-                            self.saved_pc = pc;
-                            base = self.base as u32;
-                        } else {
-                            unreachable!()
+                            pc+=1;
                         }
+                        self.saved_pc = pc;
+                        base = self.base as u32;
                     }
                     OpCode::VarArg => todo!(),
                 }
             }
         }
     }
+}
+
+fn equal_obj(_state: &mut LuaState, rkb: TValue, rkc: TValue) -> bool {
+    rkb == rkc
+    // TODO metamethod
+}
+
+fn less_than(state:&mut LuaState, rkb: TValue, rkc: TValue) -> Result<bool,LuaError> {
+    if rkb.get_type_name() != rkc.get_type_name() {
+        luaG::order_error(state,&rkb,&rkc)?;
+    } else if rkb.is_number() {
+        return Ok(rkb.get_number_value() < rkc.get_number_value());
+    } else if rkb.is_string() {
+        return Ok(rkb.borrow_string_value() < rkc.borrow_string_value());
+    }
+    // TODO metamethods
+    luaG::order_error(state,&rkb,&rkc)?;
+    unreachable!()
+}
+
+fn less_equal(state:&mut LuaState, rkb: TValue, rkc: TValue) -> Result<bool,LuaError> {
+    if rkb.get_type_name() != rkc.get_type_name() {
+        luaG::order_error(state,&rkb,&rkc)?;
+    } else if rkb.is_number() {
+        return Ok(rkb.get_number_value() <= rkc.get_number_value());
+    } else if rkb.is_string() {
+        return Ok(rkb.borrow_string_value() <= rkc.borrow_string_value());
+    }
+    // TODO metamethods
+    luaG::order_error(state,&rkb,&rkc)?;
+    unreachable!()
 }
 
 fn arith(state: &mut LuaState, ra: u32, rb: usize, rc: usize, op: OpCode) -> Result<(), LuaError> {

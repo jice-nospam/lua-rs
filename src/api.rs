@@ -92,6 +92,10 @@ pub fn push_value(s: &mut LuaState, index: isize) {
     s.push_value(index);
 }
 
+pub fn push_literal(s: &mut LuaState, value: &str) {
+    s.push_literal(value);
+}
+
 pub fn call(s: &mut LuaState, nargs: usize, nresults: i32) -> Result<(), LuaError> {
     s.call(nargs, nresults)
 }
@@ -105,7 +109,7 @@ pub fn set_field(s: &mut LuaState, idx: i32, name: &str) {
         idx
     };
     let t=s.index2adr(idx as isize);
-    s.set_tablev(t, key, value);
+    s.set_tablev(&t, key, value);
 }
 
 pub fn pop(s: &mut LuaState, count: usize) {
@@ -119,6 +123,11 @@ pub fn push_string(s: &mut LuaState, value: &str) {
 pub fn push_number(s: &mut LuaState, value: LuaNumber) {
     s.push_number(value);
 }
+
+pub fn push_boolean(s: &mut LuaState, value: bool) {
+    s.push_boolean(value);
+}
+
 
 
 pub fn push_nil(s: &mut LuaState) {
@@ -154,7 +163,12 @@ pub fn is_nil(s: &mut LuaState, index: isize) -> bool {
 }
 
 pub fn to_pointer(s: &mut LuaState, index: isize) -> *const TValue {
-    s.index2adr(index) as *const TValue
+    let index = if index < 0 {
+        s.stack.len() - (-index) as usize
+    } else {
+        index as usize + s.base
+    };
+    &s.stack[index as usize] as *const TValue
 }
 
 pub(crate) fn concat(state: &mut LuaState, n: usize) ->Result<(),LuaError>{
@@ -171,10 +185,54 @@ pub(crate) fn error(state: &mut LuaState) -> Result<(), LuaError> {
     luaG::error_msg(state)
 }
 
-pub(crate) fn _create_table(_state: &mut LuaState, _arg_1: i32, _arg_2: i32)  {
-    todo!()
+pub(crate) fn create_table(state: &mut LuaState)  {
+    state.stack.push(TValue::new_table());
 }
 
 pub(crate) fn _replace(_state: &mut LuaState, _lua_environindex: isize)  {
     todo!()
+}
+
+pub(crate) fn set_metatable(state: &mut LuaState, obj_index: i32) {
+    let mt = state.stack.pop().unwrap();
+    let mt = if mt.is_nil() {
+        None
+    } else {
+        if let TValue::Table(tref) = mt {
+            Some(tref)
+        } else {
+            unreachable!()
+        }
+    };
+    let obj_index = if obj_index < 0 && obj_index > LUA_REGISTRYINDEX as i32 {
+        obj_index+1
+    } else {
+        obj_index
+    };
+    let obj = state.index2adr(obj_index as isize);
+    match obj {
+        TValue::Table(tref) => {
+            tref.borrow_mut().metatable = mt;
+        }
+        TValue::UserData(udref) => {
+            udref.borrow_mut().metatable = mt;
+        }
+        _ => {
+            let obj_type = obj.get_type_name().to_owned();
+            state.g.mt.insert(obj_type, mt);
+        }
+    }
+}
+
+pub(crate) fn raw_get_i(state: &mut LuaState, idx: i32, n: i32) {
+    let o =state.index2adr(idx as isize);
+    if let TValue::Table(tref) = o {
+        let value = {
+            let mut t = tref.borrow_mut();
+            t.get_num(n as usize).clone()
+        };
+        state.stack.push(value);
+    } else {
+        unreachable!()
+    }
 }

@@ -1,6 +1,8 @@
 //! Standard I/O (and system) library
 
-use crate::{luaL, state::LuaState};
+use std::io::{Write, stdout};
+
+use crate::{luaL, state::LuaState, is_number, api};
 
 use super::LibReg;
 
@@ -149,8 +151,27 @@ pub fn io_tmpfile(_state: &mut LuaState) -> Result<i32, ()> {
 pub fn io_type(_state: &mut LuaState) -> Result<i32, ()> {
     todo!();
 }
-pub fn io_write(_state: &mut LuaState) -> Result<i32, ()> {
-    todo!();
+
+fn g_write(state:&mut LuaState, out: &mut dyn Write, arg: isize) -> i32 {
+    let mut nargs = api::get_top(state) as isize; // number of arguments
+    //let mut status = true;
+    // TODO handle formatting errors
+    let mut arg=arg;
+    while nargs > 0 {
+        if is_number(state, arg) {
+            write!(out, "{}",api::to_number(state,arg)).unwrap();
+        } else {
+            write!(out, "{}", state.index2adr(arg)).unwrap();
+        }
+        arg+=1;
+        nargs-=1;
+    }
+    api::push_boolean(state,true);
+    1
+}
+
+pub fn io_write(state: &mut LuaState) -> Result<i32, ()> {
+    Ok(g_write(state,&mut stdout(),1))
 }
 pub fn f_flush(_state: &mut LuaState) -> Result<i32, ()> {
     todo!();
