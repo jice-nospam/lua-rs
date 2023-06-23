@@ -357,4 +357,26 @@ mod tests {
         api::get_global(&mut state, "z");
         assert_eq!(state.stack.last().unwrap(), &TValue::Number(8.0));
     }
+    #[test]
+    fn nested_loops() {
+        let mut state = luaL::newstate();
+        luaL::dostring(
+            &mut state,
+            "z=0
+            for i=0,3 do
+                for j=0,3 do
+                    for k=1,10 do
+                        z=z+i*j
+                        if k > 5 then
+                            break;
+                        end
+                    end
+                end
+            end",
+        )
+        .unwrap();
+
+        api::get_global(&mut state, "z");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(216.0));
+    }
 }

@@ -97,17 +97,16 @@ fn code<T>(
 ) -> Result<u32, LuaError> {
     discharge_jpc(lex, state)?; // pc' will change
     let fs = lex.borrow_mut_fs(None);
+    let pc = fs.next_pc() as u32;
     let f = &mut fs.f;
-    let pc = f.code.len() as u32;
     f.code.push(o);
-    fs.pc = pc as usize;
     f.lineinfo.push(line);
     Ok(pc)
 }
 
 fn discharge_jpc<T>(lex: &mut LexState<T>, state: &mut LuaState) -> Result<(), LuaError> {
-    let pc = lex.borrow_mut_fs(None).f.code.len() as i32;
-    let jpc = lex.borrow_mut_fs(None).jpc;
+    let pc = lex.borrow_fs(None).next_pc();
+    let jpc = lex.borrow_fs(None).jpc;
     patch_list_aux(lex, state, jpc, pc, NO_REG, pc)?;
     lex.borrow_mut_fs(None).jpc = NO_JUMP;
     Ok(())
@@ -119,10 +118,11 @@ pub(crate) fn patch_list<T>(
     list: i32,
     target: i32,
 ) -> Result<(), LuaError> {
-    if target == lex.borrow_fs(None).pc as i32 {
+    let pc = lex.borrow_fs(None).next_pc();
+    if target == pc {
         patch_to_here(lex, state, list)
     } else {
-        debug_assert!(target < lex.borrow_fs(None).pc as i32);
+        debug_assert!(target < pc);
         patch_list_aux(lex, state, list, target, NO_REG, target)
     }
 }
@@ -334,10 +334,10 @@ fn get_jump_control<T>(lex: &mut LexState<T>, pc: i32) -> &mut u32 {
 fn get_jump<T>(lex: &mut LexState<T>, jpc: i32) -> i32 {
     let fs = lex.borrow_mut_fs(None);
     let offset = get_arg_sbx(fs.f.code[jpc as usize]);
-    if offset == NO_JUMP {
-        NO_JUMP
+    if offset == NO_JUMP { // point to itself represents end of list
+        NO_JUMP // end of list
     } else {
-        jpc + 1 + offset
+        jpc + 1 + offset // turn offset into absolute position
     }
 }
 
@@ -435,8 +435,8 @@ pub(crate) fn set_returns<T>(
 ///  optimizations with consecutive instructions not in the same basic block).
 fn get_label<T>(lex: &mut LexState<T>) -> i32 {
     let fs = lex.borrow_mut_fs(None);
-    fs.last_target = fs.pc as i32;
-    fs.pc as i32
+    fs.last_target = fs.next_pc();
+    fs.last_target
 }
 
 pub(crate) fn patch_to_here<T>(
@@ -581,15 +581,15 @@ pub(crate) fn nil<T>(
     {
         let (pc, last_target) = {
             let fs = lex.borrow_fs(None);
-            (fs.pc, fs.last_target)
+            (fs.next_pc(), fs.last_target)
         };
-        if pc as i32 > last_target {
+        if pc> last_target {
             //  no jumps to current position?
             if pc == 0 {
                 // function start
                 return Ok(());
             }
-            let previous = lex.borrow_mut_code(pc - 1);
+            let previous = lex.borrow_mut_code(pc as usize - 1);
             if get_opcode(*previous) == OpCode::LoadNil {
                 let pfrom = get_arg_a(*previous);
                 let pto = get_arg_b(*previous);
@@ -674,7 +674,7 @@ fn free_reg<T>(lex: &mut LexState<T>, reg: u32) {
 
 pub(crate) fn fix_line<T>(lex: &mut LexState<T>, line: usize) {
     let fs = lex.borrow_mut_fs(None);
-    let pc = fs.f.code.len();
+    let pc = fs.next_pc() as usize;
     fs.f.lineinfo[pc - 1] = line;
 }
 
@@ -814,7 +814,7 @@ fn jump_on_cond<T>(
             let ie = fs.f.code[exp.info as usize];
             if get_opcode(ie) == OpCode::Not {
                 // remove previous OP_NOT
-                fs.pc -= 1;
+                fs.f.code.pop();
                 return cond_jump(
                     lex,
                     state,

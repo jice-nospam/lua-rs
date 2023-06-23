@@ -210,14 +210,20 @@ impl OpCode {
                 | OpCode::TForLoop
         )
     }
+    #[cfg(feature = "debug_logs")]
     pub(crate) fn is_abx(&self) -> bool {
         matches!(
             self,
             OpCode::LoadK | OpCode::GetGlobal | OpCode::SetGlobal | OpCode::Closure
         )
     }
+    #[cfg(feature = "debug_logs")]
+    pub(crate) fn is_sbx(&self) -> bool {
+        matches!(self, OpCode::Jmp )
+    }
+    #[cfg(feature = "debug_logs")]
     pub(crate) fn is_asbx(&self) -> bool {
-        matches!(self, OpCode::Jmp | OpCode::ForLoop | OpCode::ForPrep)
+        matches!(self, OpCode::ForLoop | OpCode::ForPrep)
     }
 }
 

@@ -4,16 +4,18 @@ pub fn main() {
     let mut state = luaL::newstate();
     luaL::open_libs(&mut state).unwrap();
     match luaL::dostring(&mut state, "
-    local function fibo(n)
-                if n<=2 then
-                    return n
-                else
-                    return fibo(n-1)+fibo(n-2)
+    local z=0
+    for i=0,3 do
+        for j=0,3 do
+            z=z+i*j
+            for k=1,10 do
+                if k > 5 then
+                    break;
                 end
             end
-
-            z=fibo(5)
-            print(z)
+        end
+    end
+    print(z)
     "){
         Ok(_) => (),
         Err(_) => {

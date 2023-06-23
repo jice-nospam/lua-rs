@@ -124,8 +124,6 @@ pub struct FuncState {
     prev: Option<usize>,
     /// chain of current blocks
     pub(crate) bl: Vec<BlockCnt>,
-    /// next position to code
-    pub pc: usize,
     /// `pc' of last `jump target'
     pub last_target: i32,
     /// list of pending jumps to `pc'
@@ -151,7 +149,6 @@ impl FuncState {
             h: HashMap::new(),
             prev: None,
             bl: Vec::new(),
-            pc: 0,
             last_target: NO_JUMP,
             jpc: NO_JUMP,
             freereg: 0,
@@ -163,7 +160,7 @@ impl FuncState {
 
     pub(crate) fn get_break_upval(&self) -> Option<(bool, usize)> {
         let mut upval=false;
-        for (i,bl) in self.bl.iter().rev().enumerate() {
+        for (i,bl) in self.bl.iter().enumerate().rev() {
             if ! bl.is_breakable {
                 upval = upval || bl.upval;
             } else {
@@ -208,6 +205,10 @@ impl FuncState {
         let tvalue = TValue::Number(value);
         self.add_constant(tvalue.clone(), tvalue)
     }
+
+    pub(crate) fn next_pc(&self) -> i32 {
+        self.f.code.len() as i32
+    }
 }
 
 pub fn parser<T>(state: &mut LuaState, parser: &mut SParser<T>) -> Result<Proto, LuaError> {
@@ -239,7 +240,7 @@ fn remove_vars<T>(lex: &mut LexState<T>, to_level: usize) {
     let fs = lex.borrow_mut_fs(None);
     while fs.nactvar > to_level {
         fs.nactvar -= 1;
-        borrow_mut_locvar(fs, fs.nactvar).end_pc = fs.pc;
+        borrow_mut_locvar(fs, fs.nactvar).end_pc = fs.next_pc() as usize;
     }
 }
 
@@ -1271,7 +1272,7 @@ fn local_func<T>(lex: &mut LexState<T>, state: &mut LuaState) -> Result<(), LuaE
     // debug information will only see the variable after this point!
     let (nactvar, pc) = {
         let fs = lex.borrow_fs(None);
-        (fs.nactvar, fs.pc)
+        (fs.nactvar, fs.next_pc() as usize)
     };
     lex.borrow_mut_local_var(nactvar - 1).start_pc = pc;
     Ok(())
@@ -1281,7 +1282,7 @@ fn adjust_local_vars<T>(lex: &mut LexState<T>, nvars: usize) {
     let (nactvar, pc) = {
         let fs = lex.borrow_mut_fs(None);
         fs.nactvar += nvars;
-        (fs.nactvar, fs.pc)
+        (fs.nactvar, fs.next_pc() as usize)
     };
     for i in 1..=nvars {
         lex.borrow_mut_local_var(nactvar - i).start_pc = pc;
@@ -1439,7 +1440,7 @@ fn for_body<T>(
     reserve_regs(lex, state, nvars)?;
     block(lex, state)?;
     leave_block(lex, state)?; // end of scope for declared variables
-    patch_to_here(lex, state, prep)?;
+    patch_to_here(lex, state, prep)?; // fix the forprep instruction jump
     let endfor = if is_num {
         code_asbx(lex, state, OpCode::ForLoop as u32, base as i32, NO_JUMP)?
     } else {

@@ -15,7 +15,7 @@ cargo run --example basic
 |------|--------|------|-------|
 | spectral | 96ms | 31ms | <span style="color:red">3.41</span> |
 | nbody | 2.1ms | 1.9ms | <span style="color:orange">1.1</span> |
-| mandelbrot | KO | 19.8ms | <span style="color:red">KO</span> |
+| mandelbrot | 36ms | 17.5ms | <span style="color:red">2.1</span> |
 | binary_trees | 5.4ms | 3.6ms | <span style="color:orange">1.5</span> |
 
 # profiling (linux)

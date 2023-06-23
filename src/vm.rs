@@ -564,6 +564,8 @@ fn disassemble(state: &LuaState, i: Instruction, cl: &LClosure) -> String {
     let proto = &state.protos[cl.proto];
     let mut res = if o.is_asbx() {
         format!("{:10} {:>5} {:>5}", OPCODE_NAME[o as usize], a, sbx)
+    } else if o.is_sbx() {
+        format!("{:10} {:>5}", OPCODE_NAME[o as usize], sbx)
     } else if o.is_abx() {
         format!("{:10} {:>5} {:>5}", OPCODE_NAME[o as usize], a, bx)
     } else {
