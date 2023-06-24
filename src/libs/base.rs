@@ -271,9 +271,9 @@ pub fn luab_type(_state: &mut LuaState) -> Result<i32, ()> {
 }
 pub fn luab_unpack(state: &mut LuaState) -> Result<i32, ()> {
     luaL::check_table(state, 1).map_err(|_| ())?;
-    let mut i=luaL::opt_int(state,2,1);
+    let mut i=luaL::opt_int(state,2).unwrap_or(1);
     let len=luaL::obj_len(state,1);
-    let e = luaL::opt_int(state,3,len as i32);
+    let e = luaL::opt_int(state,3).unwrap_or(len as i32);
     let n=e-i+1; // number of elements
     if n <= 0 {
         return Ok(0); // empty range

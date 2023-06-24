@@ -24,7 +24,7 @@ pub(crate) use code as luaK;
 pub(crate) use debug as luaG;
 pub(crate) use ldo as luaD;
 pub(crate) use parser as luaY;
-use state::LuaState;
+pub use {state::LuaState,object::TValue};
 pub(crate) use table as luaH;
 pub(crate) use undump as luaU;
 pub(crate) use vm as luaV;
@@ -36,11 +36,11 @@ pub type LuaInteger = i64;
 pub type LuaRustFunction = fn(&mut LuaState) -> Result<i32, ()>;
 
 /// lua bytecode dump header
-pub const LUA_SIGNATURE: &str = "\x1BLua";
+pub(crate) const LUA_SIGNATURE: &str = "\x1BLua";
 /// option for multiple returns in `lua_pcall' and `lua_call'
 pub const LUA_MULTRET: i32 = -1;
 /// minimum Lua stack available to a Rust function
-pub const LUA_MINSTACK: usize = 20;
+pub(crate) const LUA_MINSTACK: usize = 20;
 // pseudo-indices
 pub const LUA_REGISTRYINDEX: isize = -10000;
 pub const LUA_ENVIRONINDEX: isize = -10001;

@@ -4,7 +4,7 @@ use crate::{
     luaD, luaG, luaV, luaZ,
     object::TValue,
     state::{LuaState, PanicFunction},
-    Reader, LUA_GLOBALSINDEX, LuaNumber, LUA_REGISTRYINDEX, LuaInteger,
+    Reader, LUA_GLOBALSINDEX, LuaNumber, LUA_REGISTRYINDEX, LuaInteger, LuaRustFunction,
 };
 
 #[derive(Debug,PartialEq)]
@@ -162,6 +162,10 @@ pub fn is_nil(s: &mut LuaState, index: isize) -> bool {
     s.index2adr(index).is_nil()
 }
 
+pub fn is_function(s: &mut LuaState, index: isize) -> bool {
+    s.index2adr(index).is_function()
+}
+
 pub fn to_pointer(s: &mut LuaState, index: isize) -> *const TValue {
     let index = if index < 0 {
         s.stack.len() - (-index) as usize
@@ -185,8 +189,12 @@ pub(crate) fn error(state: &mut LuaState) -> Result<(), LuaError> {
     luaG::error_msg(state)
 }
 
-pub(crate) fn create_table(state: &mut LuaState)  {
+pub fn create_table(state: &mut LuaState)  {
     state.stack.push(TValue::new_table());
+}
+
+pub fn set_global(state: &mut LuaState, name: &str) {
+    state.set_global(name);
 }
 
 pub(crate) fn _replace(_state: &mut LuaState, _lua_environindex: isize)  {
@@ -235,4 +243,8 @@ pub(crate) fn raw_get_i(state: &mut LuaState, idx: i32, n: i32) {
     } else {
         unreachable!()
     }
+}
+
+pub fn push_rust_function(state: &mut LuaState, func: LuaRustFunction) {
+    state.push_rust_function(func);
 }

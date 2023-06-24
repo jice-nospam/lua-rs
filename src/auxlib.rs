@@ -3,7 +3,7 @@
 use crate::{
     api::{self, LuaError},
     state::LuaState,
-    LuaInteger, LuaNumber, LUA_GLOBALSINDEX, LUA_MULTRET, LUA_REGISTRYINDEX, object::TValue,
+    LuaInteger, LuaNumber, LUA_GLOBALSINDEX, LUA_MULTRET, LUA_REGISTRYINDEX, object::TValue, luaH::TableRef,
 };
 
 pub use crate::libs::*;
@@ -123,36 +123,44 @@ pub fn typename(s: &LuaState, index: isize) -> String {
     s.index2adr(index).get_type_name().to_owned()
 }
 
-pub(crate) fn check_number(s: &mut LuaState, index: isize) -> Result<LuaNumber, LuaError> {
+pub fn check_number(s: &mut LuaState, index: isize) -> Result<LuaNumber, ()> {
     let value = api::to_number(s, index);
     if value == 0.0 && !api::is_number(s, index) {
-        type_error(s, index, "number")?;
+        type_error(s, index, "number").map_err(|_| ())?;
     }
     Ok(value)
 }
 
-pub(crate) fn check_integer(s: &mut LuaState, index: isize) -> Result<LuaInteger, LuaError> {
+pub fn check_boolean(s: &mut LuaState, index: isize) -> Result<bool, ()> {
+    let value = api::to_boolean(s, index);
+    Ok(value)
+}
+
+pub fn check_integer(s: &mut LuaState, index: isize) -> Result<LuaInteger, ()> {
     let value = api::to_number(s, index);
     if value == 0.0 && !api::is_number(s, index) {
-        type_error(s, index, "number")?;
+        type_error(s, index, "number").map_err(|_| ())?;
     }
     Ok(value as LuaInteger)
 }
 
-pub(crate) fn check_string(s: &mut LuaState, index: isize) -> Result<String, LuaError> {
+pub fn check_string(s: &mut LuaState, index: isize) -> Result<String, ()> {
     match api::to_string(s, index) {
         Some(s) => Ok(s),
         None => {
-            type_error(s, index, "string")?;
+            type_error(s, index, "string").map_err(|_| ())?;
             unreachable!()
         }
     }
 }
 
-pub(crate) fn check_table(s: &mut LuaState, index: isize) -> Result<(), LuaError> {
+pub fn check_table(s: &mut LuaState, index: isize) -> Result<TableRef, ()> {
     match s.index2adr(index) {
-        TValue::Table(_) => Ok(()),
-        _ => type_error(s, index, "table"),
+        TValue::Table(tref) => Ok(tref.clone()),
+        _ => {
+            let _= type_error(s, index, "table");
+            Err(())
+        },
     }
 }
 
@@ -170,11 +178,27 @@ pub(crate) fn arg_error(state: &mut LuaState, narg: isize, extra_msg: &str) -> R
     Err(LuaError::RuntimeError)
 }
 
-pub(crate) fn opt_int(state: &mut LuaState, narg: i32, default_value: i32) -> i32 {
-    check_integer(state, narg as isize).map(|n| n as i32).unwrap_or(default_value)
+pub fn opt_int(state: &mut LuaState, narg: i32) -> Option<i32> {
+    check_integer(state, narg as isize).ok().map(|n| n as i32)
 }
 
-pub(crate) fn obj_len(state: &mut LuaState, idx: i32) -> usize {
+pub fn opt_number(state: &mut LuaState, narg: i32) -> Option<LuaNumber> {
+    check_number(state, narg as isize).ok()
+}
+
+pub fn opt_boolean(state: &mut LuaState, narg: i32) -> Option<bool> {
+    check_boolean(state, narg as isize).ok()
+}
+
+pub fn opt_table(state: &mut LuaState, narg: i32) -> Option<TableRef> {
+    check_table(state, narg as isize).ok()
+}
+
+pub fn opt_string(state: &mut LuaState, narg: i32) -> Option<String> {
+    check_string(state, narg as isize).ok()
+}
+
+pub fn obj_len(state: &mut LuaState, idx: i32) -> usize {
     match state.index2adr(idx as isize) {
         TValue::String(s) => s.len(),
         TValue::UserData(_udref) => todo!(),

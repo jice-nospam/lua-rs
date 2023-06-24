@@ -95,6 +95,12 @@ impl TValue {
     pub fn is_number(&self) -> bool {
         matches!(self,TValue::Number(_))
     }
+    pub fn to_number(&self) -> Result<LuaNumber,()> {
+        match self {
+            TValue::Number(n) => Ok(*n),
+            _ => Err(())
+        }
+    }
     pub fn is_string(&self) -> bool {
         matches!(self,TValue::String(_))
     }

@@ -20,6 +20,12 @@ pub struct Table {
 }
 
 impl Table {
+    pub fn iter(&self) -> std::slice::Iter<'_, TValue> {
+        self.array.iter()
+    }
+    pub fn pairs(&self) -> std::collections::hash_map::Iter<TValue,TValue> {
+        self.node.iter()
+    }
     pub fn new() -> Self {
         Self {
             flags: !0,
