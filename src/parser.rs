@@ -8,7 +8,7 @@ use crate::{
     lex::{LexState, Reserved, SemInfo, Token},
     luaK::{
         self, code_abc, code_abx, code_asbx, exp2anyreg, exp2nextreg, exp2rk, fix_line, indexed,
-        patch_list, patch_to_here, reserve_regs, ret, set_list, set_mult_ret, store_var,
+        patch_list, patch_to_here, reserve_regs, ret, set_list, set_mult_ret, store_var, op_self,
     },
     luaconf::LUAI_MAXVARS,
     object::{int2fb, LocVar, Proto, TValue},
@@ -539,7 +539,10 @@ fn primary_expr<T>(
             c if c == u32::from(':') => {
                 // `:' NAME funcargs
                 lex.next_token(state)?;
-                todo!();
+                let mut key=ExpressionDesc::default();
+                check_name(lex, state, &mut key)?;
+                op_self(lex, state, exp, &mut key)?;
+                func_args(lex, state, exp)?;
             }
             c if c == u32::from('(') || c == u32::from('{') || c == Reserved::String as u32 => {
                 luaK::exp2nextreg(lex, state, exp)?;

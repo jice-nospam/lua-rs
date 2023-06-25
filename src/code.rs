@@ -334,7 +334,8 @@ fn get_jump_control<T>(lex: &mut LexState<T>, pc: i32) -> &mut u32 {
 fn get_jump<T>(lex: &mut LexState<T>, jpc: i32) -> i32 {
     let fs = lex.borrow_mut_fs(None);
     let offset = get_arg_sbx(fs.f.code[jpc as usize]);
-    if offset == NO_JUMP { // point to itself represents end of list
+    if offset == NO_JUMP {
+        // point to itself represents end of list
         NO_JUMP // end of list
     } else {
         jpc + 1 + offset // turn offset into absolute position
@@ -451,9 +452,15 @@ pub(crate) fn patch_to_here<T>(
     Ok(())
 }
 
-fn code_label<T>(lex: &mut LexState<T>, state: &mut LuaState, a: u32, b: i32, jump: i32) -> Result<i32,LuaError> {
+fn code_label<T>(
+    lex: &mut LexState<T>,
+    state: &mut LuaState,
+    a: u32,
+    b: i32,
+    jump: i32,
+) -> Result<i32, LuaError> {
     get_label(lex); // those instructions may be jump targets
-    Ok(code_abc(lex,state,OpCode::LoadBool as u32,a as i32,b,jump)? as i32)
+    Ok(code_abc(lex, state, OpCode::LoadBool as u32, a as i32, b, jump)? as i32)
 }
 
 /// check whether list has any jump that do not produce a value
@@ -583,7 +590,7 @@ pub(crate) fn nil<T>(
             let fs = lex.borrow_fs(None);
             (fs.next_pc(), fs.last_target)
         };
-        if pc> last_target {
+        if pc > last_target {
             //  no jumps to current position?
             if pc == 0 {
                 // function start
@@ -856,6 +863,24 @@ fn discharge2any_reg<T>(
     Ok(())
 }
 
+pub(crate) fn op_self<T>(
+    lex: &mut LexState<T>,
+    state: &mut LuaState,
+    e: &mut ExpressionDesc,
+    key: &mut ExpressionDesc,
+) -> Result<(), LuaError> {
+    exp2anyreg(lex, state, e)?;
+    free_exp(lex, e);
+    let func = lex.borrow_fs(None).freereg as i32;
+    reserve_regs(lex, state, 2)?;
+    let c = exp2rk(lex, state, key)? as i32;
+    code_abc(lex, state, OpCode::OpSelf as u32, func, e.info, c)?;
+    free_exp(lex, key);
+    e.info = func;
+    e.k = ExpressionKind::NonRelocable;
+    Ok(())
+}
+
 fn invert_jump<T>(lex: &mut LexState<T>, exp: &mut ExpressionDesc) {
     let pcref = get_jump_control(lex, exp.info);
     set_arg_a(pcref, if get_arg_a(*pcref) == 0 { 1 } else { 0 });
@@ -996,14 +1021,19 @@ fn const_folding(op: OpCode, exp1: &mut ExpressionDesc, exp2: &mut ExpressionDes
     true
 }
 
-pub(crate) fn concat<T>(lex: &mut LexState<T>, state: &mut LuaState, l1: &mut i32, l2: i32) -> Result<(), LuaError> {
+pub(crate) fn concat<T>(
+    lex: &mut LexState<T>,
+    state: &mut LuaState,
+    l1: &mut i32,
+    l2: i32,
+) -> Result<(), LuaError> {
     if l2 == NO_JUMP {
         Ok(())
     } else if *l1 == NO_JUMP {
-        *l1=l2;
+        *l1 = l2;
         Ok(())
     } else {
-        let mut list=*l1;
+        let mut list = *l1;
         loop {
             let next = get_jump(lex, list);
             if next != NO_JUMP {
@@ -1015,4 +1045,3 @@ pub(crate) fn concat<T>(lex: &mut LexState<T>, state: &mut LuaState, l1: &mut i3
         fix_jump(lex, state, list, l2)
     }
 }
-

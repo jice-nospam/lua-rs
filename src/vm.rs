@@ -203,7 +203,20 @@ impl LuaState {
                         self.saved_pc = pc;
                         base = self.base as u32;
                     }
-                    OpCode::OpSelf => todo!(),
+                    OpCode::OpSelf => {
+                        let rb=base + get_arg_b(i);
+                        self.stack[ra as usize+1] = self.stack[rb as usize].clone();
+                        self.saved_pc = pc;
+                        let key=self.get_rkc(i, base, protoid);
+                        let value = if let TValue::Table(tref) = &self.stack[rb as usize] {
+                            let mut t=tref.borrow_mut();
+                            t.get(&key).unwrap_or(&TValue::Nil).clone()
+                        } else {
+                            unreachable!()
+                        };
+                        self.stack[ra as usize] = value;
+                        base = self.base as u32;
+                    },
                     OpCode::Add => arith_op!(+,OpCode::Add,protoid,self,i,base,ra,pc),
                     OpCode::Sub => arith_op!(-,OpCode::Sub,protoid,self,i,base,ra,pc),
                     OpCode::Mul => arith_op!(*,OpCode::Mul,protoid,self,i,base,ra,pc),

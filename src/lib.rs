@@ -219,6 +219,22 @@ mod tests {
         assert_eq!(state.stack.last().unwrap(), &TValue::Number(3.0));
     }
     #[test]
+    fn method() {
+        let mut state = luaL::newstate();
+        luaL::dostring(
+            &mut state,
+            "
+            a={i=3}
+            function a:t() return self.i+1 end
+            z=a:t()
+            ",
+        )
+        .unwrap();
+
+        api::get_global(&mut state, "z");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(4.0));
+    }
+    #[test]
     fn unknown_lib() {
         let mut state = luaL::newstate();
         let r = luaL::dostring(&mut state, "ia.write('hello')");
