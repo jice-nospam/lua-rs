@@ -108,9 +108,9 @@ impl LuaState {
                 } else {
                     // no varargs
                     let base = cl_stkid + 1;
-                    if self.stack.len() > base + self.protos[cl.proto].numparams {
-                        panic!("cannot truncate stack in dprecall");
-                        //self.stack.truncate(base + cl.proto.numparams);
+                    let numparams=self.protos[cl.proto].numparams;
+                    if self.stack.len() > base + numparams {
+                        self.stack.truncate(base + numparams);
                     }
                     base
                 };

@@ -141,6 +141,32 @@ mod tests {
         assert_eq!(state.stack.last().unwrap(), &TValue::Number(55.0));
     }
     #[test]
+    fn for_with_step() {
+        let mut state = luaL::newstate();
+        luaL::dostring(&mut state, "a=0 for i=1,10,2 do a=a+i end").unwrap();
+
+        api::get_global(&mut state, "a");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(25.0));
+    }
+    #[test]
+    fn for_in() {
+        let mut state = luaL::newstate();
+        luaL::dostring(&mut state, "
+            a=0
+            t={1,3,5,8}
+            function iter(t)
+                local i=0
+                return function()
+                    i=i+1
+                    return t[i]
+                end
+            end
+            for i in iter(t) do a=a+i end").unwrap();
+
+        api::get_global(&mut state, "a");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(17.0));
+    }
+    #[test]
     fn nested_for() {
         let mut state = luaL::newstate();
         luaL::dostring(

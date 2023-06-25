@@ -4,18 +4,17 @@ pub fn main() {
     let mut state = luaL::newstate();
     luaL::open_libs(&mut state).unwrap();
     match luaL::dostring(&mut state, "
-    local z=0
-    for i=0,3 do
-        for j=0,3 do
-            z=z+i*j
-            for k=1,10 do
-                if k > 5 then
-                    break;
-                end
-            end
+    a=0
+    t={1,3,5,8}
+    function iter(t)
+        local i=0
+        return function()
+            i=i+1
+            return t[i]
         end
     end
-    print(z)
+    for i in iter(t) do a=a+i end
+    print(a)
     "){
         Ok(_) => (),
         Err(_) => {

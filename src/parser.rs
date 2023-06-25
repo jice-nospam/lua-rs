@@ -1356,7 +1356,7 @@ fn for_stat<T>(lex: &mut LexState<T>, state: &mut LuaState, line: usize) -> Resu
             for_num(lex, state, var_name, line)?;
         }
         Some(t) if t.token == ',' as u32 || t.token == Reserved::In as u32 => {
-            for_list(lex, var_name)?;
+            for_list(lex, state, var_name)?;
         }
         _ => {
             return lex.syntax_error(state, "'=' or 'in' expected");
@@ -1382,8 +1382,28 @@ fn leave_block<T>(lex: &mut LexState<T>, state: &mut LuaState) -> Result<(), Lua
     patch_to_here(lex, state, bl.breaklist)
 }
 
-fn for_list<T>(_lex: &mut LexState<T>, _var_name: String) -> Result<(), LuaError> {
-    todo!()
+/// forlist -> NAME {,NAME} IN explist1 forbody
+fn for_list<T>(lex: &mut LexState<T>, state: &mut LuaState, var_name: String) -> Result<(), LuaError> {
+    let base = lex.borrow_fs(None).freereg;
+    // create control variables
+    new_localvar(lex, state, "(for generator)".to_owned(), 0)?;
+    new_localvar(lex, state, "(for state)".to_owned(), 1)?;
+    new_localvar(lex, state, "(for control)".to_owned(), 2)?;
+    // create declared variable
+    new_localvar(lex, state, var_name, 3)?;
+    let mut nvars=4;
+    while test_next(lex, state, ',' as u32)? {
+        let next_var_name = str_checkname(lex, state)?;
+        new_localvar(lex, state, next_var_name, nvars)?;
+        nvars+=1;
+    }
+    check_next(lex, state, Reserved::In as u32)?;
+    let line = lex.linenumber;
+    let mut e=ExpressionDesc::default();
+    let nexps = exp_list1(lex, state, &mut e)?;
+    adjust_assign(lex, state, 3, nexps, &mut e)?;
+    luaK::check_stack(lex, state, 3)?; // extra space to call generator
+    for_body(lex, state, base, line, nvars - 3, false)
 }
 
 /// fornum -> NAME = exp1,exp1[,exp1] forbody

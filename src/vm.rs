@@ -393,7 +393,25 @@ impl LuaState {
                         let jump = get_arg_sbx(i);
                         pc = (pc as i32 + jump) as usize;
                     }
-                    OpCode::TForLoop => todo!(),
+                    OpCode::TForLoop => {
+                        let mut cb=ra+3; // call base
+                        self.stack[cb as usize+2] = self.stack[ra as usize+2].clone();
+                        self.stack[cb as usize+1] = self.stack[ra as usize+1].clone();
+                        self.stack[cb as usize] = self.stack[ra as usize].clone();
+                        self.saved_pc = pc;
+                        let nresults = get_arg_c(i) as i32;
+                        self.dcall(cb as usize, nresults)?;
+                        base = self.base as u32;
+                        self.stack.resize(self.base_ci[self.ci].top, TValue::Nil);
+                        cb = base + get_arg_a(i)+3;
+                        if ! self.stack[cb as usize].is_nil() { // continue loop ?
+                            self.stack[cb as usize -1] = self.stack[cb as usize].clone();
+                            let pci = self.protos[protoid].code[pc];
+                            let jmp = get_arg_sbx(pci);
+                            pc = (pc as i32 + jmp) as usize;
+                        }
+                        pc+=1;
+                    },
                     OpCode::SetList => {
                         let mut n=get_arg_b(i);
                         let mut c=get_arg_c(i);
