@@ -298,10 +298,10 @@ mod tests {
     fn sin() {
         let mut state = luaL::newstate();
         luaL::open_libs(&mut state).unwrap();
-        luaL::dostring(&mut state, "z=math.sin(math.pi/4)").unwrap();
+        luaL::dostring(&mut state, "z=math.sin(math.pi/2)").unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(0.5));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(1.0));
     }
     #[test]
     fn min() {

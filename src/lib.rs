@@ -421,4 +421,18 @@ mod tests {
         api::get_global(&mut state, "z");
         assert_eq!(state.stack.last().unwrap(), &TValue::Number(216.0));
     }
+    #[test]
+    fn concat() {
+        let mut state = luaL::newstate();
+        luaL::dostring(
+            &mut state,
+            "a='hello'
+            b='world'
+            z=a..' '..b",
+        )
+        .unwrap();
+
+        api::get_global(&mut state, "z");
+        assert_eq!(state.stack.last().unwrap(), &TValue::from("hello world"));
+    }
 }

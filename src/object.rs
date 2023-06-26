@@ -36,6 +36,12 @@ impl From<&str> for TValue {
     }
 }
 
+impl From<String> for TValue {
+    fn from(value: String) -> Self {
+        Self::String(Rc::new(value))
+    }
+}
+
 impl From<Closure> for TValue {
     fn from(value: Closure) -> Self {
         Self::Function(Rc::new(RefCell::new(value)))
