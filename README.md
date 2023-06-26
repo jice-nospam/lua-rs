@@ -29,3 +29,4 @@ callgrind_annotate callgrind.out.NNNNN
 - user data
 - metamethods
 - hooks
+- libs : see README.md in src/libs
