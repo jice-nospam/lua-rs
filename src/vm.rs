@@ -13,7 +13,7 @@ use crate::{
         BIT_RK, LFIELDS_PER_FLUSH,
     },
     state::LuaState,
-    LuaNumber,
+    LuaNumber, LUA_MULTRET,
 };
 
 #[cfg(feature = "debug_logs")]
@@ -151,7 +151,16 @@ impl LuaState {
                             pc += 1; // skip next instruction (if C)
                         }
                     }
-                    OpCode::LoadNil => todo!(),
+                    OpCode::LoadNil => {
+                        let mut b = base + get_arg_b(i);
+                        loop {
+                            self.stack[b as usize] = TValue::Nil;
+                            b -= 1;
+                            if b < ra {
+                                break;
+                            }
+                        }
+                    }
                     OpCode::GetUpVal => {
                         let b = get_arg_b(i);
                         self.stack[ra as usize] = self.get_lua_closure_upvalue(func, b as usize);
@@ -233,7 +242,11 @@ impl LuaState {
                             }
                         }
                     }
-                    OpCode::Not => todo!(),
+                    OpCode::Not => {
+                        let b=base + get_arg_b(i);
+                        let res=self.stack[b as usize].is_false();
+                        self.stack[ra as usize] = TValue::Boolean(res);
+                    },
                     OpCode::Len => {
                         let rb = (base + get_arg_b(i)) as usize;
                         match &self.stack[rb] {
@@ -314,7 +327,16 @@ impl LuaState {
                         }
                         pc += 1;
                     }
-                    OpCode::TestSet => todo!(),
+                    OpCode::TestSet => {
+                        let b=base+get_arg_b(i);
+                        let c=get_arg_c(i) > 0;
+                        if self.stack[b as usize].is_false() != c {
+                            self.stack[ra as usize] = self.stack[b as usize].clone();
+                            let pci =  self.protos[protoid].code[pc];
+                            pc = (pc as i32 + get_arg_sbx(pci)) as usize;
+                        }
+                        pc+=1;
+                    },
                     OpCode::Call => {
                         let b = get_arg_b(i);
                         let nresults = get_arg_c(i) as i32 - 1;
@@ -343,7 +365,51 @@ impl LuaState {
                             }
                         }
                     }
-                    OpCode::TailCall => todo!(),
+                    OpCode::TailCall => {
+                        let b = get_arg_b(i);
+                        if b != 0 {
+                            self.stack.resize((ra + b) as usize, TValue::Nil); // top = ra+b
+                        } // else previous instruction set top
+                        self.saved_pc = pc;    
+                        match self.dprecall(ra as usize, LUA_MULTRET) {
+                            Ok(PrecallStatus::Lua) => {
+                                // tail call: put new frame in place of previous one
+                                let pbase = self.base_ci[self.ci].base; // previous base
+                                let pfunc=func; // previous function index
+                                let nbase = self.base_ci[self.ci-1].base; // new base
+                                if !self.open_upval.is_empty() {
+                                    self.close_func(nbase);
+                                }
+                                let mut prevci = &mut self.base_ci[self.ci-1];
+                                let func = prevci.func;
+                                self.base = func + pbase - pfunc;
+                                prevci.base = self.base;
+                                let mut aux=0;
+                                while pfunc+aux < self.stack.len() {
+                                    // move frame down
+                                    self.stack[(func+aux) as usize] = self.stack[(pfunc+aux) as usize].clone();
+                                    aux+=1;
+                                }
+                                self.stack.resize((func+aux) as usize, TValue::Nil);
+                                prevci.top = self.stack.len(); // correct top
+                                prevci.saved_pc = self.saved_pc;
+                                prevci.tailcalls+=1; // one more call lost
+                                self.base_ci.pop(); // remove new frame
+                                self.ci-=1;
+                                continue 'reentry;
+                            }
+                            Ok(PrecallStatus::Rust) => {
+                                // it was a Rust function (`precall' called it); adjust results
+                                base = self.base as u32;
+                            }
+                            Ok(PrecallStatus::RustYield) => {
+                                return Ok(()); // yield
+                            }
+                            Err(e) => {
+                                return Err(e);
+                            }
+                        }                                            
+                    },
                     OpCode::Return => {
                         let b = get_arg_b(i);
                         if b != 0 {
@@ -633,8 +699,10 @@ fn disassemble(state: &LuaState, i: Instruction, cl: &LClosure) -> String {
 }
 
 pub(crate) fn concat(state: &mut LuaState, total: usize, last: usize) -> Result<(), LuaError> {
-    let top = state.base as usize + last  + 1;
-    if api::to_string(state, top as isize - 2).is_none() || api::to_string(state, top as isize - 1).is_none() {
+    let top = state.base as usize + last + 1;
+    if api::to_string(state, top as isize - 2).is_none()
+        || api::to_string(state, top as isize - 1).is_none()
+    {
         // TODO metamethods
         return luaG::concat_error(state, top as isize - 2, top as isize - 1);
     } else {

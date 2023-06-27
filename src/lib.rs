@@ -435,4 +435,23 @@ mod tests {
         api::get_global(&mut state, "z");
         assert_eq!(state.stack.last().unwrap(), &TValue::from("hello world"));
     }
+    #[test]
+    fn tailcall() {
+        let mut state = luaL::newstate();
+        luaL::dostring(
+            &mut state,
+            "function facto(n,acc)
+                if n==0 then
+                    return acc
+                else
+                    return facto(n-1,acc*n);
+                end
+            end
+            z=facto(7,1)",
+        )
+        .unwrap();
+
+        api::get_global(&mut state, "z");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(5040.0));
+    }
 }
