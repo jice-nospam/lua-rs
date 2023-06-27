@@ -454,4 +454,78 @@ mod tests {
         api::get_global(&mut state, "z");
         assert_eq!(state.stack.last().unwrap(), &TValue::Number(5040.0));
     }
+    #[test]
+    fn vararg() {
+        let mut state = luaL::newstate();
+        luaL::open_libs(&mut state).unwrap();
+        luaL::dostring(
+            &mut state,
+            "function sum(...)
+                local args={...};
+                local sum = 0;
+                for _,num in ipairs(args) do
+                    sum = sum + num
+                end
+                return sum
+            end
+            z=sum(3,8,11)",
+        )
+        .unwrap();
+
+        api::get_global(&mut state, "z");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(22.0));
+    }    
+    #[test]
+    fn pairs_array() {
+        let mut state = luaL::newstate();
+        luaL::open_libs(&mut state).unwrap();
+        luaL::dostring(
+            &mut state,
+            "t={1,3,6}
+            z=0
+            for k,v in pairs(t) do
+                z = z + v
+            end",
+        )
+        .unwrap();
+
+        api::get_global(&mut state, "z");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(10.0));
+    }
+    #[test]
+    fn pairs_hash() {
+        let mut state = luaL::newstate();
+        luaL::open_libs(&mut state).unwrap();
+        luaL::dostring(
+            &mut state,
+            "t={a=1,b=3,c=6}
+            z=0
+            for k,v in pairs(t) do
+                z = z + v
+            end",
+        )
+        .unwrap();
+
+        api::get_global(&mut state, "z");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(10.0));
+    }        
+    #[test]
+    fn pairs_mixed() {
+        let mut state = luaL::newstate();
+        luaL::open_libs(&mut state).unwrap();
+        luaL::dostring(
+            &mut state,
+            "t={1,3,6}
+            t.a=9
+            z=0
+            for k,v in pairs(t) do
+                z = z + v
+            end",
+        )
+        .unwrap();
+
+        api::get_global(&mut state, "z");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(19.0));
+    }        
+
 }

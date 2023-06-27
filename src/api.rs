@@ -248,3 +248,32 @@ pub(crate) fn raw_get_i(state: &mut LuaState, idx: i32, n: i32) {
 pub fn push_rust_function(state: &mut LuaState, func: LuaRustFunction) {
     state.push_rust_function(func);
 }
+
+pub fn set_top(s: &mut LuaState, idx: i32) {
+    if idx >= 0 {
+        while s.stack.len() < s.base + idx as usize {
+            s.push_nil();
+        }
+    } else {
+        let newlen = s.stack.len() + 1 - (-idx) as usize;
+        s.stack.resize(newlen, TValue::Nil);
+    }
+}
+
+pub fn next(s: &mut LuaState, idx: i32) -> bool {
+    let t=s.index2adr(idx as isize);
+    if let TValue::Table(tref) = t {
+        let t = tref.borrow();
+        let (k,v) = t.next(s.stack.last().unwrap());
+        s.stack.pop(); // remove old key
+        if k.is_nil() {
+            // no more elements.
+            return false;
+        }
+        s.stack.push(k); // new key
+        s.stack.push(v);
+        true
+    } else {
+        unreachable!()
+    }
+}

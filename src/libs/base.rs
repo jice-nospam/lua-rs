@@ -168,9 +168,6 @@ pub fn luab_loadfile(_state: &mut LuaState) -> Result<i32, ()> {
 pub fn luab_loadstring(_state: &mut LuaState) -> Result<i32, ()> {
     todo!();
 }
-pub fn luab_next(_state: &mut LuaState) -> Result<i32, ()> {
-    todo!();
-}
 pub fn luab_pcall(_state: &mut LuaState) -> Result<i32, ()> {
     todo!();
 }
@@ -288,14 +285,40 @@ pub fn luab_xpcall(_state: &mut LuaState) -> Result<i32, ()> {
     todo!();
 }
 
-pub fn luab_ipairs(_state: &mut LuaState) -> Result<i32, ()> {
-    todo!();
+pub fn luab_ipairs(s: &mut LuaState) -> Result<i32, ()> {
+    luaL::check_table(s, 1)?;
+    api::push_value(s, LUA_GLOBALSINDEX-1); // generator
+    api::push_value(s, 1); // state
+    api::push_number(s, 0.0); // and initial value
+    Ok(3)
 }
-pub fn ipairsaux(_state: &mut LuaState) -> Result<i32, ()> {
-    todo!();
+pub fn ipairsaux(s: &mut LuaState) -> Result<i32, ()> {
+    let i =luaL::check_integer(s, 2)? + 1; // next value
+    luaL::check_table(s, 1)?;
+    api::push_number(s, i as f64);
+    api::raw_get_i(s, 1, i as i32);
+    if api::is_nil(s, -1) {
+        Ok(0)
+    } else {
+        Ok(2)
+    }
 }
-pub fn luab_pairs(_state: &mut LuaState) -> Result<i32, ()> {
-    todo!();
+pub fn luab_pairs(s: &mut LuaState) -> Result<i32, ()> {
+    luaL::check_table(s, 1)?;
+    api::push_value(s, LUA_GLOBALSINDEX-1); // generator
+    api::push_value(s, 1); // state
+    api::push_nil(s); // and initial value
+    Ok(3)
+}
+pub fn luab_next(s: &mut LuaState) -> Result<i32, ()> {
+    luaL::check_table(s, 1)?;
+    api::set_top(s,2); // create a 2nd argument if there isn't one
+    if api::next(s,1) {
+        Ok(2)
+    } else {
+        api::push_nil(s);
+        Ok(1)
+    }
 }
 pub fn luab_newproxy(_state: &mut LuaState) -> Result<i32, ()> {
     todo!();

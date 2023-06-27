@@ -4,14 +4,12 @@ pub fn main() {
     let mut state = luaL::newstate();
     luaL::open_libs(&mut state).unwrap();
     match luaL::dostring(&mut state, "
-    function facto(n,acc)
-                if n==0 then
-                    return acc
-                else
-                    return facto(n-1,acc*n);
-                end
+    t={1,3,6}
+            t.a=9
+            z=0
+            for k,v in pairs(t) do
+                z = z + v
             end
-            z=facto(7,1)
     print(z)
     "){
         Ok(_) => (),

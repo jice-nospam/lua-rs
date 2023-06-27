@@ -567,6 +567,7 @@ impl LuaState {
             //     //uv.value = self.stack[uv.v].clone();
             //     //self.stack[uv.v] = uv.value.clone();
             // }
+            // TODO save upvals somewhere
             self.open_upval.pop();
         }
     }
@@ -656,6 +657,14 @@ impl LuaState {
             unreachable!()
         };
         cl.get_rust_upvalue(upval_id)
+    }
+
+    pub(crate) fn set_or_push(&mut self, index: usize, val: TValue) {
+        if index == self.stack.len() {
+            self.stack.push(val);
+        } else {
+            self.stack[index] = val;
+        }
     }
 }
 

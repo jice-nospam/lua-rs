@@ -7,6 +7,7 @@ use crate::{
     api::LuaError,
     luaD::PrecallStatus,
     luaG,
+    luaK::check_stack,
     object::{Closure, LClosure, StkId, TValue},
     opcodes::{
         get_arg_a, get_arg_b, get_arg_bx, get_arg_c, get_arg_sbx, get_opcode, rk_is_k, OpCode,
@@ -243,10 +244,10 @@ impl LuaState {
                         }
                     }
                     OpCode::Not => {
-                        let b=base + get_arg_b(i);
-                        let res=self.stack[b as usize].is_false();
+                        let b = base + get_arg_b(i);
+                        let res = self.stack[b as usize].is_false();
                         self.stack[ra as usize] = TValue::Boolean(res);
-                    },
+                    }
                     OpCode::Len => {
                         let rb = (base + get_arg_b(i)) as usize;
                         match &self.stack[rb] {
@@ -328,15 +329,15 @@ impl LuaState {
                         pc += 1;
                     }
                     OpCode::TestSet => {
-                        let b=base+get_arg_b(i);
-                        let c=get_arg_c(i) > 0;
+                        let b = base + get_arg_b(i);
+                        let c = get_arg_c(i) > 0;
                         if self.stack[b as usize].is_false() != c {
                             self.stack[ra as usize] = self.stack[b as usize].clone();
-                            let pci =  self.protos[protoid].code[pc];
+                            let pci = self.protos[protoid].code[pc];
                             pc = (pc as i32 + get_arg_sbx(pci)) as usize;
                         }
-                        pc+=1;
-                    },
+                        pc += 1;
+                    }
                     OpCode::Call => {
                         let b = get_arg_b(i);
                         let nresults = get_arg_c(i) as i32 - 1;
@@ -370,32 +371,33 @@ impl LuaState {
                         if b != 0 {
                             self.stack.resize((ra + b) as usize, TValue::Nil); // top = ra+b
                         } // else previous instruction set top
-                        self.saved_pc = pc;    
+                        self.saved_pc = pc;
                         match self.dprecall(ra as usize, LUA_MULTRET) {
                             Ok(PrecallStatus::Lua) => {
                                 // tail call: put new frame in place of previous one
                                 let pbase = self.base_ci[self.ci].base; // previous base
-                                let pfunc=func; // previous function index
-                                let nbase = self.base_ci[self.ci-1].base; // new base
+                                let pfunc = func; // previous function index
+                                let nbase = self.base_ci[self.ci - 1].base; // new base
                                 if !self.open_upval.is_empty() {
                                     self.close_func(nbase);
                                 }
-                                let mut prevci = &mut self.base_ci[self.ci-1];
+                                let mut prevci = &mut self.base_ci[self.ci - 1];
                                 let func = prevci.func;
                                 self.base = func + pbase - pfunc;
                                 prevci.base = self.base;
-                                let mut aux=0;
-                                while pfunc+aux < self.stack.len() {
+                                let mut aux = 0;
+                                while pfunc + aux < self.stack.len() {
                                     // move frame down
-                                    self.stack[(func+aux) as usize] = self.stack[(pfunc+aux) as usize].clone();
-                                    aux+=1;
+                                    self.stack[(func + aux) as usize] =
+                                        self.stack[(pfunc + aux) as usize].clone();
+                                    aux += 1;
                                 }
-                                self.stack.resize((func+aux) as usize, TValue::Nil);
+                                self.stack.resize((func + aux) as usize, TValue::Nil);
                                 prevci.top = self.stack.len(); // correct top
                                 prevci.saved_pc = self.saved_pc;
-                                prevci.tailcalls+=1; // one more call lost
+                                prevci.tailcalls += 1; // one more call lost
                                 self.base_ci.pop(); // remove new frame
-                                self.ci-=1;
+                                self.ci -= 1;
                                 continue 'reentry;
                             }
                             Ok(PrecallStatus::Rust) => {
@@ -408,8 +410,8 @@ impl LuaState {
                             Err(e) => {
                                 return Err(e);
                             }
-                        }                                            
-                    },
+                        }
+                    }
                     OpCode::Return => {
                         let b = get_arg_b(i);
                         if b != 0 {
@@ -477,19 +479,19 @@ impl LuaState {
                         pc = (pc as i32 + jump) as usize;
                     }
                     OpCode::TForLoop => {
-                        let mut cb = ra + 3; // call base
-                        self.stack[cb as usize + 2] = self.stack[ra as usize + 2].clone();
-                        self.stack[cb as usize + 1] = self.stack[ra as usize + 1].clone();
-                        self.stack[cb as usize] = self.stack[ra as usize].clone();
+                        let mut cb = ra as usize + 3; // call base
+                        self.set_or_push(cb, self.stack[ra as usize].clone());
+                        self.set_or_push(cb+1, self.stack[ra as usize + 1].clone());
+                        self.set_or_push(cb+2,self.stack[ra as usize + 2].clone());
                         self.saved_pc = pc;
                         let nresults = get_arg_c(i) as i32;
-                        self.dcall(cb as usize, nresults)?;
+                        self.dcall(cb, nresults)?;
                         base = self.base as u32;
                         self.stack.resize(self.base_ci[self.ci].top, TValue::Nil);
-                        cb = base + get_arg_a(i) + 3;
-                        if !self.stack[cb as usize].is_nil() {
+                        cb = (base + get_arg_a(i) + 3) as usize;
+                        if !self.stack[cb].is_nil() {
                             // continue loop ?
-                            self.stack[cb as usize - 1] = self.stack[cb as usize].clone();
+                            self.stack[cb - 1] = self.stack[cb].clone();
                             let pci = self.protos[protoid].code[pc];
                             let jmp = get_arg_sbx(pci);
                             pc = (pc as i32 + jmp) as usize;
@@ -520,7 +522,9 @@ impl LuaState {
                             }
                         }
                     }
-                    OpCode::Close => todo!(),
+                    OpCode::Close => {
+                        self.close_func(ra as usize);
+                    }
                     OpCode::Closure => {
                         let pid = get_arg_bx(i);
                         let pid = self.protos[protoid].p[pid as usize];
@@ -552,7 +556,23 @@ impl LuaState {
                         self.saved_pc = pc;
                         base = self.base as u32;
                     }
-                    OpCode::VarArg => todo!(),
+                    OpCode::VarArg => {
+                        let mut b = get_arg_b(i) as i32 - 1;
+                        let cbase = self.base_ci[self.ci].base;
+                        let n = cbase - func - self.protos[protoid].numparams - 1;
+                        if b == LUA_MULTRET {
+                            b = n as i32;
+                            self.stack.resize(ra as usize + n, TValue::Nil);
+                        }
+                        for j in 0..b as usize {
+                            if j < n {
+                                self.stack[ra as usize + j] =
+                                    self.stack[(cbase + j - n) as usize].clone();
+                            } else {
+                                self.stack[ra as usize + j] = TValue::Nil;
+                            }
+                        }
+                    }
                 }
             }
         }
