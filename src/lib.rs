@@ -24,11 +24,11 @@ pub(crate) use code as luaK;
 pub(crate) use debug as luaG;
 pub(crate) use ldo as luaD;
 pub(crate) use parser as luaY;
-pub use {state::LuaState,object::TValue};
 pub(crate) use table as luaH;
 pub(crate) use undump as luaU;
 pub(crate) use vm as luaV;
 pub(crate) use zio as luaZ;
+pub use {object::TValue, state::LuaState};
 
 pub type LuaNumber = f64;
 pub type LuaInteger = i64;
@@ -151,7 +151,9 @@ mod tests {
     #[test]
     fn for_in() {
         let mut state = luaL::newstate();
-        luaL::dostring(&mut state, "
+        luaL::dostring(
+            &mut state,
+            "
             a=0
             t={1,3,5,8}
             function iter(t)
@@ -161,7 +163,9 @@ mod tests {
                     return t[i]
                 end
             end
-            for i in iter(t) do a=a+i end").unwrap();
+            for i in iter(t) do a=a+i end",
+        )
+        .unwrap();
 
         api::get_global(&mut state, "a");
         assert_eq!(state.stack.last().unwrap(), &TValue::Number(17.0));
@@ -474,7 +478,7 @@ mod tests {
 
         api::get_global(&mut state, "z");
         assert_eq!(state.stack.last().unwrap(), &TValue::Number(22.0));
-    }    
+    }
     #[test]
     fn pairs_array() {
         let mut state = luaL::newstate();
@@ -508,7 +512,7 @@ mod tests {
 
         api::get_global(&mut state, "z");
         assert_eq!(state.stack.last().unwrap(), &TValue::Number(10.0));
-    }        
+    }
     #[test]
     fn pairs_mixed() {
         let mut state = luaL::newstate();
@@ -526,7 +530,7 @@ mod tests {
 
         api::get_global(&mut state, "z");
         assert_eq!(state.stack.last().unwrap(), &TValue::Number(19.0));
-    }        
+    }
     #[test]
     fn repeat() {
         let mut state = luaL::newstate();
@@ -544,7 +548,7 @@ mod tests {
 
         api::get_global(&mut state, "z");
         assert_eq!(state.stack.last().unwrap(), &TValue::Number(511.0));
-    }        
+    }
     #[test]
     fn while_do() {
         let mut state = luaL::newstate();
@@ -562,7 +566,7 @@ mod tests {
 
         api::get_global(&mut state, "z");
         assert_eq!(state.stack.last().unwrap(), &TValue::Number(511.0));
-    }        
+    }
     #[test]
     fn coercion() {
         let mut state = luaL::newstate();
@@ -577,5 +581,30 @@ mod tests {
 
         api::get_global(&mut state, "z");
         assert_eq!(state.stack.last().unwrap(), &TValue::Number(15.0));
-    }     
+    }
+    #[test]
+    fn expression() {
+        let mut state = luaL::newstate();
+        luaL::open_libs(&mut state).unwrap();
+        luaL::dostring(
+            &mut state,
+            "function f() return 2,5 end
+            a,b,c = f(), 1 -- results in 2,1,nil
+            d,e,f = 1,f() -- results in 1,2,5", 
+        )
+        .unwrap();
+
+        api::get_global(&mut state, "a");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(2.0));
+        api::get_global(&mut state, "b");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(1.0));
+        api::get_global(&mut state, "c");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Nil);
+        api::get_global(&mut state, "d");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(1.0));
+        api::get_global(&mut state, "e");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(2.0));
+        api::get_global(&mut state, "f");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(5.0));
+    }
 }
