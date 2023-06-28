@@ -434,7 +434,7 @@ pub(crate) fn set_returns<T>(
 
 /// returns current `pc' and marks it as a jump target (to avoid wrong
 ///  optimizations with consecutive instructions not in the same basic block).
-fn get_label<T>(lex: &mut LexState<T>) -> i32 {
+pub(crate) fn get_label<T>(lex: &mut LexState<T>) -> i32 {
     let fs = lex.borrow_mut_fs(None);
     fs.last_target = fs.next_pc();
     fs.last_target

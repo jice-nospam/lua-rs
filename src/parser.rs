@@ -321,7 +321,7 @@ fn statement<T>(lex: &mut LexState<T>, state: &mut LuaState) -> Result<bool, Lua
                 return Ok(false);
             }
             Ok(Reserved::Repeat) => {
-                repeat_stat(lex, line)?;
+                repeat_stat(lex, state, line)?;
                 return Ok(false);
             }
             Ok(Reserved::Function) => {
@@ -1345,8 +1345,29 @@ fn func_name<T>(
     Ok(need_self)
 }
 
-fn repeat_stat<T>(_lex: &mut LexState<T>, _line: usize) -> Result<(), LuaError> {
-    todo!()
+/// repeatstat -> REPEAT block UNTIL cond
+fn repeat_stat<T>(lex: &mut LexState<T>, state: &mut LuaState, line: usize) -> Result<(), LuaError> {
+    let repeat_init = luaK::get_label(lex);
+    enter_block(lex, true); // loop block
+    enter_block(lex, false); // scope block
+    lex.next_token(state)?; // skip REPEAT
+    chunk(lex, state)?;
+    check_match(lex, state, Reserved::Until as u32, Reserved::Repeat as u32, line)?;
+    let cond_exit = cond(lex, state)?; // read condition (inside scope block)
+    let upvals = lex.borrow_fs(None).bl.last().unwrap().upval;
+    if ! upvals { // no upvalues ?
+        leave_block(lex, state)?; // finish scope
+        luaK::patch_list(lex, state, cond_exit, repeat_init)?; // close the loop
+    } else {
+        // complete semantics when there are upvalues
+        break_stat(lex, state)?; // if condition then break
+        luaK::patch_to_here(lex, state, cond_exit)?; // else...
+        leave_block(lex, state)?; // finish scope
+        let list=luaK::jump(lex, state)?;
+        luaK::patch_list(lex, state, list, repeat_init)?; // and repeat
+    }
+    leave_block(lex, state)?;
+    Ok(())
 }
 
 /// forstat -> FOR (fornum | forlist) END
