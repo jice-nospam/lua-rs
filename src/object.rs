@@ -5,7 +5,7 @@ use std::{cell::RefCell, fmt::Display, rc::Rc};
 use crate::{
     limits::Instruction,
     luaH::{Table, TableRef},
-    LuaNumber, LuaRustFunction,
+    LuaNumber, LuaRustFunction, lex::str2d,
 };
 
 /// index in the current stack
@@ -111,7 +111,7 @@ impl TValue {
         match self {
             TValue::Number(n) => Ok(*n),
             TValue::String(rcs) => {
-                rcs.parse::<LuaNumber>().map_err(|_|())
+                str2d(&*rcs).ok_or(())
             }
             _ => Err(())
         }

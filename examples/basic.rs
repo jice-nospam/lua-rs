@@ -5,8 +5,7 @@ pub fn main() {
     luaL::open_libs(&mut state).unwrap();
     match luaL::dostring(&mut state, "
     print(1 or false) 
-    print((1 or false) and true)
-    print(((1 or false) and true) or false) 
+    print(0xE+1)
     "){
         Ok(_) => (),
         Err(_) => {

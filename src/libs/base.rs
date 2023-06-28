@@ -2,7 +2,7 @@
 
 use crate::{
     api, api::LuaError, luaL, object::TValue, state::LuaState, LuaNumber, LuaRustFunction,
-    LUA_GLOBALSINDEX, LUA_VERSION,
+    LUA_GLOBALSINDEX, LUA_VERSION, lex::str2d,
 };
 
 use super::LibReg;
@@ -234,7 +234,7 @@ pub fn luab_tonumber(state: &mut LuaState) -> Result<i32, ()> {
         luaL::arg_error(state, 2, "base out of range").map_err(|_| ())?;
     }
     let s1 = luaL::check_string(state, 1).map_err(|_| ())?;
-    if let Ok(n) = s1.parse::<LuaNumber>() {
+    if let Some(n) = str2d(&s1) {
         api::push_number(state, n);
         return Ok(1);
     }

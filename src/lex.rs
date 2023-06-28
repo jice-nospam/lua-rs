@@ -406,6 +406,9 @@ impl<T> LexState<T> {
     fn is_current_digit(&self) -> bool {
         matches!(self.current,Some(c) if c.is_ascii_digit())
     }
+    fn is_current_xdigit(&self) -> bool {
+        matches!(self.current,Some(c) if c.is_ascii_hexdigit())
+    }
     fn is_current_alphanumeric(&self) -> bool {
         matches!(self.current,Some(c) if c.is_alphanumeric())
     }
@@ -668,24 +671,33 @@ impl<T> LexState<T> {
 
     fn read_numeral(&mut self, state: &mut LuaState) -> Result<f64, LuaError> {
         debug_assert!(self.is_current_digit());
+        let first = self.current.unwrap();
         self.save_and_next(state);
-        while self.is_current_digit() || self.is_current('.') {
-            self.save_and_next(state);
+        let mut expo = "Ee";
+        let mut hex = false;
+        if first == '0' && self.check_next(state, "Xx") {
+            // hexadecimal ?
+            hex = true;
+            expo = "Pp";
         }
-        if self.check_next(state, "Ee") {
-            // optional exponent sign
-            self.check_next(state, "+-");
-        }
-        while self.is_current_alphanumeric() || self.is_current('_') {
-            self.save_and_next(state);
+        loop {
+            if self.check_next(state, expo) {
+                // exponent part ?
+                self.check_next(state, "+-"); // exponent sign
+            }
+            if self.is_current_xdigit() || self.is_current('.') {
+                self.save_and_next(state);
+            } else {
+                break;
+            }
         }
         let svalue = self.buff.iter().cloned().collect::<String>();
         // follow locale for decimal point
         let svalue = svalue.replace('.', &self.decpoint);
-        svalue.parse::<f64>().map_err(|_| {
+        str2d(&svalue).ok_or_else(|| {
             self.lex_error::<()>(state, "malformed number", Some(Reserved::Number as u32))
-                .ok();
-            LuaError::SyntaxError
+                .err()
+                .unwrap()
         })
     }
 
@@ -728,4 +740,91 @@ impl<T> LexState<T> {
         self.lookahead = self.lex(state)?;
         Ok(())
     }
+}
+
+pub(crate) fn str2d(svalue: &str) -> Option<f64> {
+    if strpbrk(svalue, "nN") {
+        // reject 'inf' and 'nan'
+        None
+    } else if strpbrk(svalue, "xX") {
+        // hexa?
+        strx2number(svalue)
+    } else {
+        svalue.parse::<f64>().ok()
+    }
+}
+
+/// convert an hexadecimal numeric string to a number, following
+/// C99 specification for 'strtod'
+fn strx2number(svalue: &str) -> Option<f64> {
+    let mut r = 0.0;
+    let mut e = 0.0;
+    let mut i = 0;
+    let mut it = 0;
+    let chars: Vec<char> = svalue.chars().collect();
+    let len=chars.len();
+    let neg = chars[0] == '-';
+    if neg || chars[0] == '+' {
+        it += 1;
+    }
+    if !(chars[it] == '0' && (chars[it + 1] == 'x' || chars[it + 1] == 'X')) {
+        // invalid format. should start with 0x
+        return None;
+    }
+    it += 2;
+    while it < len && chars[it].is_ascii_hexdigit() {
+        // read integer part
+        r = r * 16.0 + (u8::from_str_radix(&chars[it].to_string(), 16).unwrap() as f64);
+        it += 1;
+        i += 1;
+    }
+    if it < len && chars[it] == '.' {
+        it += 1; // skip dot
+        while it < len && chars[it].is_ascii_hexdigit() {
+            // read fractional part
+            r = r * 16.0 + (u8::from_str_radix(&chars[it].to_string(), 16).unwrap() as f64);
+            it += 1;
+            e += 1.0;
+        }
+    }
+    if i == 0 && e == 0.0 {
+        // invalid format (no digit)
+        return None;
+    }
+    e *= -4.0; // each fractional digit divides value by 2^-4
+    if it < len && (chars[it] == 'p' || chars[it] == 'P') {
+        // exponent part?
+        let mut exp1 = 0.0;
+        it += 1; // skip 'p'
+        let neg1 = if it < len {
+            chars[it] == '-'
+        } else {
+            false
+        };
+        if neg1 || (it < len && chars[it] == '+') {
+            it += 1;
+        }
+        while it < len && chars[it].is_ascii_digit() {
+            // read exponent
+            exp1 = exp1 * 10.0 + (chars[it] as u8 - '0' as u8) as f64;
+            it += 1;
+        }
+        if neg1 {
+            exp1 = -exp1;
+        }
+        e += exp1;
+    }
+    if neg {
+        r = -r;
+    }
+    Some(r + e)
+}
+
+fn strpbrk(haystack: &str, needle: &str) -> bool {
+    for c in haystack.chars() {
+        if needle.contains(c) {
+            return true;
+        }
+    }
+    false
 }

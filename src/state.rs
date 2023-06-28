@@ -10,7 +10,7 @@ use crate::{
     object::{Closure, Proto, RClosure, StkId, TValue, UpVal},
     opcodes::{get_arg_b, get_arg_c, rk_is_k, BIT_RK},
     LuaNumber, LuaRustFunction, LUA_ENVIRONINDEX, LUA_GLOBALSINDEX, LUA_MINSTACK, LUA_MULTRET,
-    LUA_REGISTRYINDEX,
+    LUA_REGISTRYINDEX, lex::str2d,
 };
 
 pub type PanicFunction = fn(&mut LuaState) -> i32;
@@ -545,8 +545,8 @@ impl LuaState {
     ) -> Option<LuaNumber> {
         match &stack[obj] {
             TValue::Number(n) => Some(*n),
-            TValue::String(s) => match s.parse::<LuaNumber>() {
-                Ok(n) => {
+            TValue::String(s) => match str2d(s) {
+                Some(n) => {
                     if let Some(dst) = dst {
                         stack[dst] = TValue::Number(n);
                     }
