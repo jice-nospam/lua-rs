@@ -135,14 +135,17 @@ pub fn push_nil(s: &mut LuaState) {
 }
 
 pub fn to_number(s: &mut LuaState, index: isize) -> LuaNumber {
+    // TODO convert in stack
     s.index2adr(index).get_number_value()
 }
 
 pub fn to_integer(s: &mut LuaState, index: isize) -> LuaInteger {
+    // TODO convert in stack
     s.index2adr(index).get_number_value() as LuaInteger
 }
 
 pub fn to_boolean(s: &mut LuaState, index: isize) -> bool {
+    // TODO convert in stack
     s.index2adr(index).is_false()
 }
 
@@ -175,7 +178,7 @@ pub fn to_pointer(s: &mut LuaState, index: isize) -> *const TValue {
     &s.stack[index as usize] as *const TValue
 }
 
-pub(crate) fn concat(state: &mut LuaState, n: usize) ->Result<(),LuaError>{
+pub fn concat(state: &mut LuaState, n: usize) ->Result<(),LuaError>{
     if n >= 2 {
         luaV::concat(state, n, state.stack.len() - state.base - 1)?;
     } else if n == 0 {

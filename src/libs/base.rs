@@ -378,4 +378,12 @@ mod tests {
         api::get_global(&mut state, "b");
         assert_eq!(state.stack.last().unwrap(), &TValue::Number(5.0));
     }
+    #[test]
+    fn global_env() {
+        let mut state = luaL::newstate();
+        luaL::open_libs(&mut state).unwrap();
+        luaL::dostring(&mut state, "a=3 z=_G.a").unwrap();
+        api::get_global(&mut state, "z");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(3.0));
+    }
 }

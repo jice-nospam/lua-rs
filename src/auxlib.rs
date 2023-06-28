@@ -33,12 +33,8 @@ pub fn newstate() -> LuaState {
     state
 }
 
-pub fn loadbuffer(state: &mut LuaState, s: &str, name: Option<&str>) -> Result<i32, LuaError> {
-    api::load(state, get_s, s, name)
-}
-
 pub fn loadstring(state: &mut LuaState, s: &str) -> Result<i32, LuaError> {
-    loadbuffer(state, s, Some(s))
+    api::load(state, get_s, s, Some(s))
 }
 
 pub fn dostring(state: &mut LuaState, s: &str) -> Result<i32, LuaError> {
@@ -99,7 +95,7 @@ fn lwhere(_state: &mut LuaState, _arg: i32) {
     todo!();
 }
 
-fn find_table(state: &mut LuaState, index: isize, name: &str) -> Option<String> {
+pub(crate) fn find_table(state: &mut LuaState, index: isize, name: &str) -> Option<String> {
     state.push_value(index);
     for module in name.split('.') {
         state.push_string(module);

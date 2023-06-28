@@ -176,8 +176,13 @@ impl FuncState {
             .find(|&i| name == self.get_loc_var(i).name)
     }
 
-    fn mark_upval(&self, _v: usize) {
-        todo!()
+    fn mark_upval(&mut self, level: usize) {
+        for bl in self.bl.iter_mut().rev() {
+            if bl.nactvar <= level {
+                bl.upval = true;
+                break;
+            }
+        }
     }
 
     fn get_loc_var(&self, i: usize) -> &LocVar {
@@ -473,7 +478,7 @@ fn assignment<T>(
         let nvk = nv.v.k;
         lhs.push(nv);
         if let ExpressionKind::LocalRegister = nvk {
-            check_conflict(lex, &exp, lhs)?;
+            check_conflict(lex, state, &exp, lhs)?;
         }
         assignment(lex, state, lhs, nvars + 1)?;
         lhs.pop();
@@ -505,12 +510,35 @@ fn check_next<T>(lex: &mut LexState<T>, state: &mut LuaState, token: u32) -> Res
     lex.next_token(state)
 }
 
+/// check whether, in an assignment to a local variable, the local variable
+/// is needed in a previous assignment (to a table). If so, save original
+/// local value in a safe place and use this safe copy in the previous
+/// assignment.
 fn check_conflict<T>(
-    _lex: &mut LexState<T>,
-    _e: &ExpressionDesc,
-    _lhs: &mut [LHSAssignment],
+    lex: &mut LexState<T>,
+    state: &mut LuaState,
+    v: &ExpressionDesc,
+    lhs: &mut [LHSAssignment],
 ) -> Result<(), LuaError> {
-    todo!()
+    let extra=lex.borrow_fs(None).freereg as i32; // eventual position to save local variable
+    let mut conflict=false;
+    for lh in lhs.iter_mut().rev() {
+        if lh.v.k == ExpressionKind::Indexed {
+            if lh.v.info == v.info { // conflict?
+                conflict=true;
+                lh.v.info = extra; // previous assignment will use safe copy
+            }
+            if lh.v.aux == v.info { // conflict ?
+                conflict=true;
+                lh.v.aux = extra; // previous assignment will use safe copy
+            }
+        }
+    }
+    if conflict {
+        luaK::code_abc(lex, state, OpCode::Move as u32, extra, v.info, 0)?; // make copy
+        luaK::reserve_regs(lex, state, 1)?;
+    }
+    Ok(())
 }
 
 /// primaryexp -> prefixexp { `.' NAME | `[' exp `]' | `:' NAME funcargs | funcargs }
