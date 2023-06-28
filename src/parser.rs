@@ -10,7 +10,7 @@ use crate::{
         self, code_abc, code_abx, code_asbx, exp2anyreg, exp2nextreg, exp2rk, fix_line, indexed,
         patch_list, patch_to_here, reserve_regs, ret, set_list, set_mult_ret, store_var, op_self,
     },
-    luaconf::LUAI_MAXVARS,
+    luaconf::{LUAI_MAXVARS, LUAI_MAXRCALLS},
     object::{int2fb, LocVar, Proto, TValue},
     opcodes::{
         get_arg_a, set_arg_b, set_arg_c, set_opcode, OpCode, LFIELDS_PER_FLUSH, MAXARG_BX, NO_JUMP,
@@ -477,8 +477,11 @@ fn assignment<T>(
         primary_expr(lex, state, &mut nv.v)?;
         let nvk = nv.v.k;
         lhs.push(nv);
-        if let ExpressionKind::LocalRegister = nvk {
+        if nvk == ExpressionKind::LocalRegister {
             check_conflict(lex, state, &exp, lhs)?;
+        }
+        if nvars > LUAI_MAXRCALLS - state.n_rcalls {
+            return lex.error_limit(state, LUAI_MAXRCALLS, "variables in assignment");
         }
         assignment(lex, state, lhs, nvars + 1)?;
         lhs.pop();

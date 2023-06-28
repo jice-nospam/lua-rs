@@ -5,10 +5,16 @@
 /// arbitrary; its only purpose is to stop infinite recursion before
 /// exhausting memory.
 //pub const LUAI_MAXCALLS: usize = 20000;
+use crate::LuaNumber;
 
 /// LUAI_MAXRCALLS is the maximum depth for nested Rust calls (short) and
 // syntactical nested non-terminals in a program.
-pub const LUAI_MAXRCALLS: usize = 200;
+const LUAI_MCS_AUX: usize = std::i32::MAX as usize / (4 * std::mem::size_of::<LuaNumber>());
+pub const LUAI_MAXRCALLS: usize = if LUAI_MCS_AUX > std::i16::MAX as usize {
+    std::i16::MAX as usize
+} else {
+    LUAI_MCS_AUX
+};
 
 /// LUAI_MAXUPVALUES is the maximum number of upvalues per function
 /// (must be smaller than 250).
