@@ -13,7 +13,7 @@ Status :
     - ☒ `lua_Alloc`
     - ☑ `lua_atpanic`
     - ☑ `lua_call`
-    - ☐ `lua_CFunction` => `LuaRustFunction`
+    - ☑ `lua_CFunction` => `LuaRustFunction`
     - ☐ `lua_checkstack`
     - ☐ `lua_close`
     - ☑ `lua_concat`
@@ -103,7 +103,7 @@ Status :
     - ☐ `lua_xmove`
     - ☐ `lua_yield`
 
-- auxiliary library    
+- auxiliary library
     - ☐ `luaL_addchar`
     - ☒ `luaL_addlstring`
     - ☐ `luaL_addsize`

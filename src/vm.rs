@@ -760,7 +760,7 @@ fn disassemble(state: &LuaState, i: Instruction, cl: &LClosure) -> String {
 
 pub(crate) fn concat(state: &mut LuaState, total: usize, last: usize) -> Result<(), LuaError> {
     let top = state.base as usize + last + 1;
-    if api::to_string(state, top as isize - 2).is_none()
+    if ! (api::is_string(state, top as isize - 2) || api::is_number(state, top as isize -2))
         || api::to_string(state, top as isize - 1).is_none()
     {
         // TODO metamethods

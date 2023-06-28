@@ -11,7 +11,7 @@ pub(crate) fn error_msg(_state: &mut LuaState) -> Result<(), LuaError> {
 }
 
 pub(crate) fn concat_error(state: &mut LuaState, p1: isize, p2: isize) -> Result<(), LuaError> {
-    let perr = if state.index2adr(p1).is_string() {
+    let perr = if state.index2adr(p1).is_string() || state.index2adr(p1).is_number() {
         p2
     } else {
         p1

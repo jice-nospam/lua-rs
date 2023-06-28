@@ -17,7 +17,7 @@ use crate::{
         NO_REG,
     },
     state::LuaState,
-    LuaNumber, LUA_MULTRET,
+    LuaNumber, LUA_MULTRET, limits::MAX_INT,
 };
 
 #[derive(Clone, Copy)]
@@ -787,7 +787,7 @@ fn list_field<T>(
 ) -> Result<(), LuaError> {
     expr(lex, state, &mut cc.v)?;
     if cc.na > MAXARG_BX {
-        return lex.error_limit(state, MAXARG_BX, "items in a constructor");
+        return lex.error_limit(state, MAX_INT, "items in a constructor");
     }
     cc.na += 1;
     cc.to_store += 1;

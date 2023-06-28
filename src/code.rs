@@ -586,26 +586,29 @@ pub(crate) fn nil<T>(
     n: i32,
 ) -> Result<(), LuaError> {
     {
-        let (pc, last_target) = {
+        let (pc, last_target, nactvar) = {
             let fs = lex.borrow_fs(None);
-            (fs.next_pc(), fs.last_target)
+            (fs.next_pc(), fs.last_target, fs.nactvar)
         };
         if pc > last_target {
             //  no jumps to current position?
             if pc == 0 {
                 // function start
-                return Ok(());
-            }
-            let previous = lex.borrow_mut_code(pc as usize - 1);
-            if get_opcode(*previous) == OpCode::LoadNil {
-                let pfrom = get_arg_a(*previous);
-                let pto = get_arg_b(*previous);
-                if pfrom < from && from < pto + 1 {
-                    // can connect both?
-                    if from as i32 + n + 1 > pto as i32 {
-                        set_arg_b(previous, (from as i32 + n) as u32 - 1);
-                    }
+                if from >= nactvar as u32 {
                     return Ok(());
+                }
+            } else {
+                let previous = lex.borrow_mut_code(pc as usize - 1);
+                if get_opcode(*previous) == OpCode::LoadNil {
+                    let pfrom = get_arg_a(*previous);
+                    let pto = get_arg_b(*previous);
+                    if pfrom < from && from < pto + 1 {
+                        // can connect both?
+                        if from as i32 + n + 1 > pto as i32 {
+                            set_arg_b(previous, (from as i32 + n) as u32 - 1);
+                        }
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -695,7 +698,7 @@ pub(crate) fn prefix<T>(
     e2.init(ExpressionKind::NumberConstant, 0);
     match op {
         UnaryOp::Minus => {
-            if e.k == ExpressionKind::Constant {
+            if ! is_numeral(e) {
                 // cannot operate on non-numeric constants
                 exp2anyreg(lex, state, e)?;
             }
@@ -710,6 +713,10 @@ pub(crate) fn prefix<T>(
         }
     }
     Ok(())
+}
+
+pub(crate) fn is_numeral(e: &ExpressionDesc) -> bool {
+    e.k == ExpressionKind::NumberConstant && e.t == NO_JUMP && e.f == NO_JUMP
 }
 
 fn code_not<T>(
@@ -749,10 +756,14 @@ pub(crate) fn infix<T>(
         BinaryOp::And => go_if_true(lex, state, exp),
         BinaryOp::Or => go_if_false(lex, state, exp),
         BinaryOp::Concat => exp2nextreg(lex, state, exp),
-        _ => {
+        BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod | BinaryOp::Pow => {
             if !exp.is_numeral() {
                 exp2rk(lex, state, exp)?;
             }
+            Ok(())
+        },
+        _ => {
+            exp2rk(lex, state, exp)?;
             Ok(())
         }
     }
@@ -970,14 +981,19 @@ fn code_arith<T>(
     if const_folding(op, exp1, exp2) {
         return Ok(());
     }
-    let o1 = exp2rk(lex, state, exp1)?;
     let o2 = if op != OpCode::UnaryMinus && op != OpCode::Len {
         exp2rk(lex, state, exp2)?
     } else {
         0
     };
-    free_exp(lex, exp2);
-    free_exp(lex, exp1);
+    let o1 = exp2rk(lex, state, exp1)?;
+    if o1 > o2 {
+        free_exp(lex, exp1);
+        free_exp(lex, exp2);    
+    } else {
+        free_exp(lex, exp2);
+        free_exp(lex, exp1);
+    }
     exp1.info = code_abc(lex, state, op as u32, 0, o1 as i32, o2 as i32)? as i32;
     exp1.k = ExpressionKind::Relocable;
     Ok(())
