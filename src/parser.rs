@@ -307,7 +307,7 @@ fn statement<T>(lex: &mut LexState<T>, state: &mut LuaState) -> Result<bool, Lua
                 return Ok(false);
             }
             Ok(Reserved::While) => {
-                while_stat(lex, line)?;
+                while_stat(lex, state, line)?;
                 return Ok(false);
             }
             Ok(Reserved::Do) => {
@@ -1552,8 +1552,20 @@ fn block<T>(lex: &mut LexState<T>, state: &mut LuaState) -> Result<(), LuaError>
     leave_block(lex, state)
 }
 
-fn while_stat<T>(_lex: &mut LexState<T>, _line: usize) -> Result<(), LuaError> {
-    todo!()
+/// whilestat -> WHILE cond DO block END
+fn while_stat<T>(lex: &mut LexState<T>, state: &mut LuaState, line: usize) -> Result<(), LuaError> {
+    lex.next_token(state)?; // skip WHILE
+    let while_init = luaK::get_label(lex);
+    let cond_exit = cond(lex, state)?;
+    enter_block(lex, true);
+    check_next(lex, state, Reserved::Do as u32)?;
+    block(lex, state)?;
+    let list = luaK::jump(lex, state)?;
+    luaK::patch_list(lex, state, list, while_init)?;
+    check_match(lex, state, Reserved::End as u32, Reserved::While as u32, line)?;
+    leave_block(lex, state)?;
+    luaK::patch_to_here(lex, state, cond_exit)?;
+    Ok(())
 }
 
 /// ifstat -> IF cond THEN block {ELSEIF cond THEN block} [ELSE block] END
