@@ -44,7 +44,7 @@ pub(crate) const LUA_MINSTACK: usize = 20;
 pub const LUA_REGISTRYINDEX: isize = -10000;
 pub const LUA_ENVIRONINDEX: isize = -10001;
 pub const LUA_GLOBALSINDEX: isize = -10002;
-pub const LUA_VERSION: &str = "Lua 5.1.3";
+pub const LUA_VERSION: &str = "Lua 5.1.4";
 
 pub type Reader<T> = fn(&mut LuaState, &T, &mut Vec<char>) -> Result<(), ()>;
 

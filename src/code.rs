@@ -780,10 +780,6 @@ fn go_if_false<T>(
             // always false, do nothing
             NO_JUMP
         }
-        ExpressionKind::True => {
-            // always jump
-            jump(lex, state)?
-        }
         ExpressionKind::Jump => exp.info,
         _ => jump_on_cond(lex, state, exp, 1)?,
     };
@@ -803,10 +799,6 @@ pub(crate) fn go_if_true<T>(
         ExpressionKind::Constant | ExpressionKind::NumberConstant | ExpressionKind::True => {
             // always true; do nothing
             NO_JUMP
-        }
-        ExpressionKind::False => {
-            // always jump
-            jump(lex, state)?
         }
         ExpressionKind::Jump => {
             invert_jump(lex, exp);
