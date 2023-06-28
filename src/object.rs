@@ -107,6 +107,15 @@ impl TValue {
             _ => Err(())
         }
     }
+    pub fn into_number(&self) -> Result<LuaNumber,()> {
+        match self {
+            TValue::Number(n) => Ok(*n),
+            TValue::String(rcs) => {
+                rcs.parse::<LuaNumber>().map_err(|_|())
+            }
+            _ => Err(())
+        }
+    }
     pub fn is_string(&self) -> bool {
         matches!(self,TValue::String(_))
     }

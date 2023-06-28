@@ -46,7 +46,7 @@ macro_rules! arith_op {
                 }
             } else {
                 $state.saved_pc = $pc;
-                arith($state, $ra, rbi, rci, $opcode)?;
+                arithv($state, $ra, rbi, rci, rb, rc, $opcode)?;
                 $base = $state.base as u32;
             }
         }
@@ -481,8 +481,8 @@ impl LuaState {
                     OpCode::TForLoop => {
                         let mut cb = ra as usize + 3; // call base
                         self.set_or_push(cb, self.stack[ra as usize].clone());
-                        self.set_or_push(cb+1, self.stack[ra as usize + 1].clone());
-                        self.set_or_push(cb+2,self.stack[ra as usize + 2].clone());
+                        self.set_or_push(cb + 1, self.stack[ra as usize + 1].clone());
+                        self.set_or_push(cb + 2, self.stack[ra as usize + 2].clone());
                         self.saved_pc = pc;
                         let nresults = get_arg_c(i) as i32;
                         self.dcall(cb, nresults)?;
@@ -615,6 +615,46 @@ fn arith(state: &mut LuaState, ra: u32, rb: usize, rc: usize, op: OpCode) -> Res
         LuaState::to_number(&mut state.stack, rb, None),
         LuaState::to_number(&mut state.stack, rc, None),
     ) {
+        match op {
+            OpCode::Add => {
+                state.stack[ra as usize] = TValue::Number(b + c);
+            }
+            OpCode::Sub => {
+                state.stack[ra as usize] = TValue::Number(b - c);
+            }
+            OpCode::Mul => {
+                state.stack[ra as usize] = TValue::Number(b * c);
+            }
+            OpCode::Div => {
+                state.stack[ra as usize] = TValue::Number(b / c);
+            }
+            OpCode::Mod => {
+                state.stack[ra as usize] = TValue::Number(b % c);
+            }
+            OpCode::Pow => {
+                state.stack[ra as usize] = TValue::Number(b.powf(c));
+            }
+            OpCode::UnaryMinus => {
+                state.stack[ra as usize] = TValue::Number(-b);
+            }
+            _ => unreachable!(),
+        }
+    } else if !call_bin_tm(state, rb, rc, ra, op)? {
+        return luaG::arith_error(state, rb, rc);
+    }
+    Ok(())
+}
+
+fn arithv(
+    state: &mut LuaState,
+    ra: u32,
+    rb: usize,
+    rc: usize,
+    rvb: TValue,
+    rvc: TValue,
+    op: OpCode,
+) -> Result<(), LuaError> {
+    if let (Ok(b), Ok(c)) = (rvb.into_number(), rvc.into_number()) {
         match op {
             OpCode::Add => {
                 state.stack[ra as usize] = TValue::Number(b + c);

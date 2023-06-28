@@ -563,5 +563,19 @@ mod tests {
         api::get_global(&mut state, "z");
         assert_eq!(state.stack.last().unwrap(), &TValue::Number(511.0));
     }        
+    #[test]
+    fn coercion() {
+        let mut state = luaL::newstate();
+        luaL::open_libs(&mut state).unwrap();
+        luaL::dostring(
+            &mut state,
+            "t=1
+            a='4'
+            z=3+t+a+'7'",
+        )
+        .unwrap();
 
+        api::get_global(&mut state, "z");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(15.0));
+    }     
 }
