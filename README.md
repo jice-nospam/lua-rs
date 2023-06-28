@@ -1,5 +1,6 @@
 
 # compile (native, linux)
+
 ```bash
 apt-get update
 apt-get install gcc g++
@@ -7,6 +8,7 @@ cargo run --example basic
 ```
 
 # run benchmark
+
 `cargo bench`
 
 ## benchmark results
@@ -19,14 +21,24 @@ cargo run --example basic
 | binary_trees | 5.4ms | 3.6ms | <span style="color:orange">1.5</span> |
 
 # profiling (linux)
+
 ```bash
 apt-get install valgrind
 valgrind --tool=callgrind target/release/examples/spectral
 callgrind_annotate callgrind.out.NNNNN
 ```
 
-# TODO
+# WON'T BE IMPLEMENTED
+
+- no garbage collector needed as everything is handled gracefully by rust's borrow checker
+- hence, no weak table concept neither
+
+# NOT IMPLEMENTED
+
 - user data
 - metamethods
 - hooks
-- libs : see README.md in src/libs
+- coroutines
+- tables can only be indexed with numbers or strings
+- standard libraries : [see src/libs/README.md](src/libs/README.md)
+- api and auxlib : [see src/README.md](src/README.md)
