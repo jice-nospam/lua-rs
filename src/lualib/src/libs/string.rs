@@ -68,7 +68,7 @@ const STR_FUNCS: [LibReg; 15] = [
 ];
 
 pub fn lib_open_string(state: &mut LuaState) -> Result<i32, ()> {
-    luaL::register(state, "string", &STR_FUNCS).unwrap();
+    luaL::new_lib(state, &STR_FUNCS);
     create_metatable(state);
     Ok(1)
 }

@@ -1,0 +1,15 @@
+[package]
+name = "lua"
+version = "0.1.0"
+authors = ["jice <jice.nospam@gmail.com>"]
+edition = "2021"
+
+[[bin]]
+name = "lua"
+path = "main.rs"
+
+[dependencies]
+lualib = { path = "../lualib" }
+
+[features]
+debug_logs = ["lualib/debug_logs"]

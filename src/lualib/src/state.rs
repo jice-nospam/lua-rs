@@ -1,37 +1,65 @@
 //! Global State
 
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{collections::HashMap, rc::Rc};
 
 use crate::{
     api::LuaError,
     ldo::CallId,
-    limits::InstId,
-    luaH::{Table, TableRef},
-    object::{Closure, Proto, RClosure, StkId, TValue, UpVal},
+    lex::{str2d, LexState},
+    limits::{InstId, MAX_UPVAL},
+    luaH::TableRef,
+    object::{Closure, ClosureRef, Proto, ProtoId, RClosure, StkId, TValue, UpVal},
     opcodes::{get_arg_b, get_arg_c, rk_is_k, BIT_RK},
-    LuaNumber, LuaRustFunction, LUA_ENVIRONINDEX, LUA_GLOBALSINDEX, LUA_MINSTACK, LUA_MULTRET,
-    LUA_REGISTRYINDEX, lex::str2d,
+    LuaNumber, LuaRustFunction, LUA_MINSTACK, LUA_MULTRET, LUA_REGISTRYINDEX, LUA_RIDX_GLOBALS,
 };
+
+#[cfg(target_arch = "wasm32")]
+use crate::wasm::js_console;
 
 pub type PanicFunction = fn(&mut LuaState) -> i32;
 
 pub const EXTRA_STACK: usize = 5;
 
+// Bits in CallInfo call_status
+/// call is running a Lua function
+pub const CIST_LUA: u32 = 1 << 0;
+/// call is running a debug hook
+pub const CIST_HOOKED: u32 = 1 << 1;
+/// call is running on same invocation of luaV_execute of previous call
+pub const CIST_REENTRY: u32 = 1 << 2;
+/// call reentered after suspension
+pub const CIST_YIELDED: u32 = 1 << 3;
+/// call is a yieldable protected call
+pub const CIST_YPCALL: u32 = 1 << 4;
+/// call has an error status (pcall)
+pub const CIST_STAT: u32 = 1 << 5;
+/// call was tail called
+pub const CIST_TAIL: u32 = 1 << 6;
+/// last hook called yielded
+pub const CIST_HOOKYIELD: u32 = 1 << 7;
+
 /// informations about a call
 #[derive(Default)]
 pub struct CallInfo {
-    /// base for this function
-    pub base: StkId,
     /// function index in the stack
     pub func: StkId,
     /// top for this function
     pub top: StkId,
-    /// program counter
-    pub saved_pc: InstId,
     /// expected number of results from this function
     pub nresults: i32,
-    /// number of tail calls lost under this entry
-    pub tailcalls: usize,
+    /// bitfield. see CIST_*
+    pub call_status: u32,
+    // for Lua functions
+    /// base for this function
+    pub base: StkId,
+    /// program counter
+    pub saved_pc: InstId,
+    // for Rust functions
+    /// context info. in case of yields
+    pub ctx: u32,
+    /// continuation in case of yields
+    pub k: Option<LuaRustFunction>,
+    pub status: u32,
 }
 
 impl CallInfo {
@@ -45,7 +73,7 @@ pub struct GlobalState {
     pub panic: Option<PanicFunction>,
     /// metatables for basic types
     pub mt: HashMap<String, Option<TableRef>>,
-    pub registry: TValue,
+    registry: TValue,
 }
 
 impl Default for GlobalState {
@@ -58,17 +86,14 @@ impl Default for GlobalState {
     }
 }
 
-#[derive(Default)]
 pub struct LuaState {
     pub g: GlobalState,
-    /// base of current function
-    pub base: StkId,
-    /// `savedpc' of current function
-    pub saved_pc: InstId,
-    /// stack base
+    /// stack
     pub stack: Vec<TValue>,
     /// current error handling function (stack index)
     pub errfunc: StkId,
+    /// number of non-yieldable calls in stack
+    pub nny: usize,
     /// number of nested Rust calls
     pub n_rcalls: usize,
     /// call info for current function
@@ -77,9 +102,6 @@ pub struct LuaState {
     pub base_ci: Vec<CallInfo>,
     pub allowhook: bool,
     pub hookmask: usize,
-    /// table of globals
-    pub l_gt: TableRef,
-    pub gtvalue: TValue,
     /// temporary place for environments
     pub env: TableRef,
     pub envvalue: TValue,
@@ -87,6 +109,56 @@ pub struct LuaState {
     pub open_upval: Vec<UpVal>,
     /// all closures prototypes
     pub protos: Vec<Proto>,
+    /// io default output
+    pub stdout: Box<dyn std::io::Write>,
+    /// io default error output
+    pub stderr: Box<dyn std::io::Write>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Default for LuaState {
+    fn default() -> Self {
+        Self {
+            stdout: js_console(),
+            stderr: js_console(),
+            g: Default::default(),
+            stack: Default::default(),
+            errfunc: Default::default(),
+            nny: Default::default(),
+            n_rcalls: Default::default(),
+            ci: Default::default(),
+            base_ci: Default::default(),
+            allowhook: Default::default(),
+            hookmask: Default::default(),
+            env: Default::default(),
+            envvalue: Default::default(),
+            open_upval: Default::default(),
+            protos: Default::default(),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Default for LuaState {
+    fn default() -> Self {
+        Self {
+            stdout: Box::new(std::io::stdout()),
+            stderr: Box::new(std::io::stderr()),
+            g: Default::default(),
+            stack: Default::default(),
+            errfunc: Default::default(),
+            nny: Default::default(),
+            n_rcalls: Default::default(),
+            ci: Default::default(),
+            base_ci: Default::default(),
+            allowhook: Default::default(),
+            hookmask: Default::default(),
+            env: Default::default(),
+            envvalue: Default::default(),
+            open_upval: Default::default(),
+            protos: Default::default(),
+        }
+    }
 }
 
 impl LuaState {
@@ -95,10 +167,16 @@ impl LuaState {
         let mut ci = CallInfo::new();
         // `function' entry for this `ci'
         //self.stack.push(TValue::Nil);
-        self.base = 0;
         ci.base = 0;
         ci.top = 1 + LUA_MINSTACK;
         self.base_ci.push(ci);
+    }
+    #[inline]
+    pub(crate) fn get_instruction(&self, protoid: usize, pc: usize) -> u32 {
+        self.protos[protoid].code[pc]
+    }
+    pub(crate) fn borrow_mut_instruction(&mut self, protoid: usize, pc: usize) -> &mut u32 {
+        &mut self.protos[protoid].code[pc]
     }
     #[inline]
     pub fn get_lua_constant(&self, protoid: usize, kid: usize) -> TValue {
@@ -119,18 +197,32 @@ impl LuaState {
     pub(crate) fn push_nil(&mut self) {
         self.stack.push(TValue::Nil);
     }
-    pub(crate) fn call(&mut self, nargs: usize, nresults: i32) -> Result<(), LuaError> {
+    pub(crate) fn call(
+        &mut self,
+        nargs: usize,
+        nresults: i32,
+        ctx: u32,
+        k: Option<LuaRustFunction>,
+    ) -> Result<(), LuaError> {
         self.api_check_nelems(nargs + 1);
         self.check_results(nargs, nresults);
         let len = self.stack.len();
-        self.dcall(len - nargs - 1, nresults)?;
+        let func = len - nargs - 1;
+        if k.is_some() && self.nny == 0 {
+            // need to prepare continuation
+            self.base_ci[self.ci].k = k; // save continuation
+            self.base_ci[self.ci].ctx = ctx; // save context
+            self.dcall(func, nresults, true)?; // do the call
+        } else {
+            self.dcall(func, nresults, false)?;
+        }
         self.adjust_results(nresults);
         Ok(())
     }
 
     #[inline]
     fn api_check_nelems(&self, n: usize) {
-        debug_assert!(n as i32 <= self.stack.len() as i32 - self.base as i32);
+        debug_assert!(n as i32 <= self.stack.len() as i32 - self.base_ci[self.ci].base as i32);
     }
     #[inline]
     pub(crate) fn check_results(&self, nargs: usize, nresults: i32) {
@@ -143,41 +235,28 @@ impl LuaState {
 
     pub(crate) fn push_rust_closure(&mut self, func: LuaRustFunction, nup_values: usize) {
         self.api_check_nelems(nup_values);
-        let env = self.get_current_env();
-        let mut cl = RClosure::new(func, Rc::clone(&env));
+        let mut cl = RClosure::new(func);
         for _ in 0..nup_values {
             cl.upvalues.push(self.stack.pop().unwrap());
         }
         self.stack.push(TValue::from(cl));
     }
-
-    fn get_current_env(&self) -> TableRef {
-        if self.base_ci.len() == 1 {
-            // no enclosing function
-            // use global table as environment
-            return Rc::clone(&self.l_gt);
+    pub(crate) fn get_closure_ref(&self, func: usize) -> ClosureRef {
+        if let TValue::Function(cl) = &self.stack[func] {
+            Rc::clone(&cl)
         } else {
-            let ci_stkid = self.base_ci.last().unwrap().func;
-            if let TValue::Function(cl) = &self.stack[ci_stkid] {
-                return cl.borrow().get_env();
-            }
+            unreachable!()
         }
-        unreachable!()
     }
-
     pub(crate) fn run_error(&mut self, msg: &str) -> Result<(), LuaError> {
         let fullmsg = {
             let ci = &self.base_ci[self.ci];
-            let luacl = &self.stack[ci.func];
-            if let TValue::Function(rcl) = luacl {
-                let pc = self.saved_pc;
-                let proto = &self.protos[rcl.borrow().get_lua_protoid()];
-                let line = proto.lineinfo[pc];
-                let chunk_id = &proto.source;
-                format!("{}:{} {}", chunk_id, line, msg)
-            } else {
-                unreachable!()
-            }
+            let rcl = self.get_closure_ref(ci.func);
+            let pc = self.base_ci[self.ci].saved_pc;
+            let proto = &self.protos[rcl.borrow().get_proto_id()];
+            let line = proto.lineinfo[pc];
+            let chunk_id = &proto.source;
+            format!("{}:{} {}", chunk_id, line, msg)
         };
         self.stack.push(TValue::from(&fullmsg[..]));
         Err(LuaError::RuntimeError)
@@ -193,57 +272,12 @@ impl LuaState {
         self.stack.push(self.index2adr(index).clone());
     }
 
-    /// create a global variable `key` with last value on stack
-    pub(crate) fn set_global(&mut self, key: &str) {
-        self.set_field(LUA_GLOBALSINDEX, key);
-    }
-
     pub(crate) fn push_literal(&mut self, value: &str) {
         self.stack.push(TValue::from(value));
     }
 
     pub(crate) fn create_table(&mut self) {
         self.stack.push(TValue::new_table());
-    }
-
-    pub(crate) fn set_metatable(&mut self, objindex: isize) {
-        debug_assert!(!self.stack.is_empty());
-        let mt = self.stack.pop().unwrap();
-        let mt = if mt.is_nil() { None } else { Some(mt) };
-        let objtype = {
-            let objindex = if objindex < 0 && objindex > LUA_REGISTRYINDEX {
-                objindex + 1
-            } else {
-                objindex
-            };
-            let obj = self.index2adr(objindex);
-            match obj {
-                TValue::Table(rcobj) => {
-                    if let Some(TValue::Table(rcmt)) = mt {
-                        rcobj.borrow_mut().metatable = Some(rcmt);
-                        return;
-                    } else {
-                        rcobj.borrow_mut().metatable = None;
-                        return;
-                    }
-                }
-                TValue::UserData(rcobj) => {
-                    if let Some(TValue::Table(rcmt)) = mt {
-                        rcobj.borrow_mut().metatable = Some(rcmt);
-                        return;
-                    } else {
-                        rcobj.borrow_mut().metatable = None;
-                        return;
-                    }
-                }
-                _ => obj.get_type_name().to_owned(),
-            }
-        };
-        if let Some(TValue::Table(rcmt)) = mt {
-            self.g.mt.insert(objtype, Some(rcmt));
-        } else {
-            self.g.mt.remove(&objtype);
-        }
     }
 
     pub(crate) fn set_tablev(&self, tvalue: &TValue, key: TValue, value: TValue) {
@@ -272,11 +306,13 @@ impl LuaState {
                         Some(value) => {
                             // found a value, put it on stack
                             match val {
-                                Some(idx) => if idx == stack.len() {
-                                    stack.push(value.clone());
-                                } else {
-                                    stack[idx] = value.clone();
-                                },
+                                Some(idx) => {
+                                    if idx == stack.len() {
+                                        stack.push(value.clone());
+                                    } else {
+                                        stack[idx] = value.clone();
+                                    }
+                                }
                                 None => return stack.push(value.clone()),
                             }
                             return;
@@ -288,11 +324,13 @@ impl LuaState {
                             } else {
                                 // no metatable, put Nil on stack
                                 match val {
-                                    Some(idx) => if idx == stack.len() {
-                                        stack.push(TValue::Nil);
-                                    } else {
-                                        stack[idx] = TValue::Nil;
-                                    },
+                                    Some(idx) => {
+                                        if idx == stack.len() {
+                                            stack.push(TValue::Nil);
+                                        } else {
+                                            stack[idx] = TValue::Nil;
+                                        }
+                                    }
                                     None => stack.push(TValue::Nil),
                                 }
                                 return;
@@ -340,11 +378,13 @@ impl LuaState {
                             } else {
                                 // no metatable, put Nil on stack
                                 match val {
-                                    Some(idx) => if idx == stack.len() {
-                                        stack.push(TValue::Nil);
-                                    } else {
-                                        stack[idx] = TValue::Nil;
-                                    },
+                                    Some(idx) => {
+                                        if idx == stack.len() {
+                                            stack.push(TValue::Nil);
+                                        } else {
+                                            stack[idx] = TValue::Nil;
+                                        }
+                                    }
                                     None => stack.push(TValue::Nil),
                                 }
                                 return;
@@ -357,54 +397,32 @@ impl LuaState {
         }
     }
 
-    /// set a field `k` on table at position `idx` with the last stack value as value
-    pub(crate) fn set_field(&mut self, idx: isize, k: &str) {
-        debug_assert!(!self.stack.is_empty());
-        let value = self.stack.pop().unwrap();
-        let idx = if idx < 0 && idx > LUA_REGISTRYINDEX {
-            idx + 1
-        } else {
-            idx
-        };
-        let tvalue = self.index2adr(idx);
-        debug_assert!(tvalue != TValue::Nil);
-        let key = TValue::from(k);
-        self.set_tablev(&tvalue, key, value);
-    }
-
     pub(crate) fn index2adr(&self, index: isize) -> TValue {
+        let func = self.base_ci[self.ci].func;
         if index > 0 {
             // positive index in the stack
-            let index = index as usize + self.base;
-            debug_assert!(index <= self.base_ci[self.ci].top);
-            if index > self.stack.len() {
+            let index = index as usize + func;
+            debug_assert!(index + func + 1 <= self.base_ci[self.ci].top);
+            if index >= self.stack.len() {
                 return TValue::Nil;
             }
-            self.stack[index - 1].clone()
+            self.stack[index].clone()
         } else if index > LUA_REGISTRYINDEX {
             // negative index in the stack (count from top)
             let index = (-index) as usize;
-            debug_assert!(index != 0 && index <= self.stack.len());
+            debug_assert!(index != 0 && index + func <= self.stack.len());
             self.stack[self.stack.len() - index].clone()
         } else {
             match index {
                 LUA_REGISTRYINDEX => self.g.registry.clone(),
-                LUA_ENVIRONINDEX => {
-                    let stkid = self.base_ci[self.ci].func;
-                    if let TValue::Function(rcl) = &self.stack[stkid] {
-                        let cl=rcl.borrow();
-                        cl.get_envvalue().clone()
-                    } else {
-                        unreachable!()
-                    }
-                }
-                LUA_GLOBALSINDEX => self.gtvalue.clone(),
                 _ => {
-                    // global index - n => return nth upvalue of current Rust closure
-                    let index = (LUA_GLOBALSINDEX - index) as usize;
+                    // upvalues
+                    let index = (LUA_REGISTRYINDEX - index) as usize;
+                    debug_assert!(index <= MAX_UPVAL + 1);
+                    // TODO light rust function
                     let stkid = self.base_ci[self.ci].func;
                     if index <= self.get_closure_nupvalues(stkid) {
-                        return self.get_rust_closure_upvalue(stkid, index-1).clone();
+                        return self.get_rust_closure_upvalue(stkid, index - 1).clone();
                     }
                     TValue::Nil
                 }
@@ -412,79 +430,9 @@ impl LuaState {
         }
     }
 
-    /// put field value `key` from table at `index` on stack
-    pub(crate) fn get_field(&mut self, index: isize, key: &str) {
-        let t = self.index2adr(index).clone();
-        Self::get_tablev2(&mut self.stack, &t, &TValue::from(key), None);
-    }
-
-    pub(crate) fn is_table(&self, arg: isize) -> bool {
-        self.index2adr(arg).is_table()
-    }
-    pub(crate) fn is_nil(&self, arg: isize) -> bool {
-        self.index2adr(arg).is_nil()
-    }
-
     pub(crate) fn pop_stack(&mut self, count: usize) {
         let newlen = self.stack.len() - count;
         self.stack.truncate(newlen);
-    }
-
-    #[inline]
-    /// convert an index into an absolute index (-1 => stack.len()-1)
-    fn index2abs(&self, index: isize) -> usize {
-        if index < 0 {
-            self.stack.len() - (-index) as usize
-        } else {
-            index as usize
-        }
-    }
-
-    pub(crate) fn remove(&mut self, index: isize) {
-        let index = self.index2abs(index);
-        self.stack.remove(index);
-    }
-
-    /// move the stack top element to position `index`
-    pub(crate) fn insert(&mut self, index: isize) {
-        let index = self.index2abs(index);
-        let value = self.stack.pop().unwrap();
-        self.stack.insert(index, value);
-    }
-
-    /// get a field value from table at `index`. field name is last value on stack
-    /// result : field value is last value on stack
-    pub(crate) fn rawget(&mut self, index: isize) {
-        let value = {
-            let key = self.stack.pop().unwrap();
-            let index = if index < 0 && index > LUA_REGISTRYINDEX {
-                index + 1
-            } else {
-                index
-            };
-            let t = self.index2adr(index);
-            if let TValue::Table(rct) = t {
-                let mut t = rct.borrow_mut();
-                t.get(&key).unwrap_or(&TValue::Nil).clone()
-            } else {
-                unreachable!()
-            }
-        };
-        self.stack.push(value);
-    }
-
-    /// set a field on table at `index`. key and value are the last two objects on stack
-    pub(crate) fn set_table(&mut self, index: isize) {
-        debug_assert!(self.stack.len() >= 2);
-        let value = self.stack.pop().unwrap();
-        let key = self.stack.pop().unwrap();
-        let index = if index < 0 && index > LUA_REGISTRYINDEX {
-            index + 2
-        } else {
-            index
-        };
-        let t = self.index2adr(index);
-        self.set_tablev(&t, key, value);
     }
 
     pub(crate) fn poscall(&mut self, first_result: u32) -> bool {
@@ -494,11 +442,8 @@ impl LuaState {
         let mut res = ci.func;
         let wanted = ci.nresults;
 
-        self.base_ci.pop();
+        self.base_ci.pop(); // back to caller
         self.ci -= 1;
-        let ci = &self.base_ci[self.ci];
-        self.base = ci.base;
-        self.saved_pc = ci.saved_pc;
         let mut i = wanted;
         // move results to correct place
         let mut first_result = first_result as usize;
@@ -517,24 +462,29 @@ impl LuaState {
         wanted != LUA_MULTRET
     }
 
-    pub(crate) fn find_upval(upvals: &mut Vec<UpVal>, stack: &mut [TValue], level: u32) -> UpVal {
-        let mut index = 0;
-        for (i, val) in upvals.iter().enumerate().rev() {
-            if val.v < level as StkId {
-                index = i + 1;
-                break;
+    pub(crate) fn find_upval(&mut self, func: usize, level: usize) -> UpVal {
+        let cl = self.get_closure_ref(func);
+        let mut rcl = cl.borrow_mut();
+        if let Closure::Lua(cl) = &mut *rcl {
+            let mut index = 0;
+            for (i, val) in cl.upvalues.iter().enumerate().rev() {
+                if val.v < level as StkId {
+                    index = i + 1;
+                    break;
+                }
+                if val.v == level as StkId {
+                    // found a corresponding value
+                    return val.clone();
+                }
             }
-            if val.v == level as StkId {
-                // found a corresponding value
-                return val.clone();
-            }
+            let uv = UpVal {
+                v: level as StkId,
+                value: self.stack[level as usize].clone(),
+            };
+            cl.upvalues.insert(index, uv.clone());
+            return uv;
         }
-        let uv = UpVal {
-            v: level as StkId,
-            value: stack[level as usize].clone(),
-        };
-        upvals.insert(index, uv.clone());
-        uv
+        unreachable!()
     }
 
     /// convert stack[obj] to a number into stack[dst], return the number value
@@ -581,6 +531,7 @@ impl LuaState {
             self.stack[rbi].clone()
         }
     }
+
     pub(crate) fn get_rkc(&self, i: u32, base: u32, protoid: usize) -> TValue {
         let c = get_arg_c(i);
         let rci = (base + c) as usize;
@@ -591,74 +542,45 @@ impl LuaState {
         }
     }
 
-    pub(crate) fn get_lua_closure_env(&self, func: usize) -> TableRef {
-        let cl = if let TValue::Function(cl) = &self.stack[func] {
-            cl.borrow()
-        } else {
-            unreachable!()
-        };
-        cl.get_env().clone()
-    }
-
-    pub(crate) fn get_lua_closure_env_value(&self, func: usize) -> TValue {
-        let cl = if let TValue::Function(cl) = &self.stack[func] {
-            cl.borrow()
-        } else {
-            unreachable!()
-        };
-        cl.get_envvalue().clone()
-    }
-    pub(crate) fn get_lua_closure_upval_desc(&self, func: usize, upval_id: usize) -> UpVal {
-        let cl = if let TValue::Function(cl) = &self.stack[func] {
-            cl.borrow()
-        } else {
-            unreachable!()
-        };
+    pub(crate) fn _get_lua_closure_upval_desc(&self, func: usize, upval_id: usize) -> UpVal {
+        let cl = self.get_closure_ref(func);
+        let cl = cl.borrow();
         cl.get_lua_upval_desc(upval_id)
     }
     pub(crate) fn get_lua_closure_protoid(&self, func: usize) -> usize {
-        let cl = if let TValue::Function(cl) = &self.stack[func] {
-            cl.borrow()
-        } else {
-            unreachable!()
-        };
-        cl.get_lua_protoid()
+        let cl = self.get_closure_ref(func);
+        let cl = cl.borrow();
+        cl.get_proto_id()
     }
     pub(crate) fn get_lua_closure_upvalue(&self, func: usize, upval_id: usize) -> TValue {
-        let cl = if let TValue::Function(cl) = &self.stack[func] {
-            cl.borrow()
-        } else {
-            unreachable!()
-        };
+        let cl = self.get_closure_ref(func);
+        let cl = cl.borrow();
         cl.get_lua_upvalue(upval_id)
     }
+    pub(crate) fn get_lua_closure_upval(&self, func: usize, upval_id: usize) -> UpVal {
+        let cl = self.get_closure_ref(func);
+        let cl = cl.borrow();
+        cl.borrow_lua_upval(upval_id).clone()
+    }
     pub(crate) fn set_lua_closure_upvalue(&mut self, func: usize, upval_id: usize, value: TValue) {
-        let mut cl = if let TValue::Function(cl) = &mut self.stack[func] {
-            cl.borrow_mut()
-        } else {
-            unreachable!()
-        };
-        cl.set_lua_upvalue(upval_id, value);
+        let cl = self.get_closure_ref(func);
+        let mut cl = cl.borrow_mut();
+        cl.set_lua_upval_value(upval_id, value);
     }
 
     fn get_closure_nupvalues(&self, func: usize) -> usize {
-        let cl = if let TValue::Function(cl) = &self.stack[func] {
-            cl.borrow()
-        } else {
-            unreachable!()
-        };
+        let cl = self.get_closure_ref(func);
+        let cl = cl.borrow();
         cl.get_nupvalues()
     }
 
     fn get_rust_closure_upvalue(&self, func: usize, upval_id: usize) -> TValue {
-        let cl = if let TValue::Function(cl) = &self.stack[func] {
-            cl.borrow()
-        } else {
-            unreachable!()
-        };
+        let cl = self.get_closure_ref(func);
+        let cl = cl.borrow();
         cl.get_rust_upvalue(upval_id)
     }
 
+    #[inline]
     pub(crate) fn set_or_push(&mut self, index: usize, val: TValue) {
         if index == self.stack.len() {
             self.stack.push(val);
@@ -666,14 +588,58 @@ impl LuaState {
             self.stack[index] = val;
         }
     }
+
+    fn init_registry(&mut self) {
+        if let TValue::Table(tref) = &self.g.registry {
+            let mut t = tref.borrow_mut();
+            // registry[LUA_RIDX_GLOBALS] = table of globals
+            t.set_num(LUA_RIDX_GLOBALS, TValue::new_table());
+        }
+    }
+
+    pub(crate) fn get_global_table(&self) -> TValue {
+        if let TValue::Table(tref) = &self.g.registry {
+            let mut t = tref.borrow_mut();
+            t.get_num(LUA_RIDX_GLOBALS).clone()
+        } else {
+            unreachable!()
+        }
+    }
+
+    #[inline]
+    pub(crate) fn set_stack_from_idx(&mut self, dest: usize, source: usize) {
+        let value = self.stack[source].clone();
+        self.set_stack_from_value(dest, value);
+    }
+
+    #[inline]
+    pub(crate) fn set_stack_from_value(&mut self, dest: usize, value: TValue) {
+        if dest == self.stack.len() {
+            self.stack.push(value);
+        } else {
+            self.stack[dest] = value;
+        }
+    }
+
+    pub(crate) fn add_prototype<T>(
+        &mut self,
+        lex: &LexState<T>,
+        source: &str,
+        line: usize,
+    ) -> ProtoId {
+        let mut proto = Proto::new(source);
+        let cur_proto = lex.borrow_fs(None).f;
+        proto.linedefined = line;
+        let id = self.protos.len();
+        self.protos.push(proto);
+        self.protos[cur_proto].p.push(id);
+        id
+    }
 }
 
 fn f_luaopen(state: &mut LuaState, _: ()) -> Result<i32, LuaError> {
-    let gt = Table::new();
     state.init_stack();
-    // table of globals
-    state.l_gt = Rc::new(RefCell::new(gt));
-    state.gtvalue = TValue::from(&state.l_gt);
+    state.init_registry();
     Ok(0)
 }
 

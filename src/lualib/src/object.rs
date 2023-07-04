@@ -3,9 +3,11 @@
 use std::{cell::RefCell, fmt::Display, rc::Rc};
 
 use crate::{
+    lex::str2d,
     limits::Instruction,
     luaH::{Table, TableRef},
-    LuaNumber, LuaRustFunction, lex::str2d,
+    parser::UpValDesc,
+    LuaNumber, LuaRustFunction,
 };
 
 /// index in the current stack
@@ -14,7 +16,7 @@ pub type StkId = usize;
 pub type UserDataRef = Rc<RefCell<UserData>>;
 pub type ClosureRef = Rc<RefCell<Closure>>;
 /// index in the LuaState.protos vector
-pub type ProtoRef = usize;
+pub type ProtoId = usize;
 
 #[derive(Clone, Default)]
 pub enum TValue {
@@ -84,7 +86,7 @@ impl TValue {
         Self::Table(Rc::new(RefCell::new(Table::new())))
     }
     pub fn is_nil(&self) -> bool {
-        matches!(self,TValue::Nil)
+        matches!(self, TValue::Nil)
     }
     pub fn get_number_value(&self) -> LuaNumber {
         match self {
@@ -99,40 +101,38 @@ impl TValue {
         }
     }
     pub fn is_number(&self) -> bool {
-        matches!(self,TValue::Number(_))
+        matches!(self, TValue::Number(_))
     }
-    pub fn to_number(&self) -> Result<LuaNumber,()> {
+    pub fn to_number(&self) -> Result<LuaNumber, ()> {
         match self {
             TValue::Number(n) => Ok(*n),
-            _ => Err(())
+            _ => Err(()),
         }
     }
-    pub fn into_number(&self) -> Result<LuaNumber,()> {
+    pub fn into_number(&self) -> Result<LuaNumber, ()> {
         match self {
             TValue::Number(n) => Ok(*n),
-            TValue::String(rcs) => {
-                str2d(&*rcs).ok_or(())
-            }
-            _ => Err(())
+            TValue::String(rcs) => str2d(&*rcs).ok_or(()),
+            _ => Err(()),
         }
     }
     pub fn is_string(&self) -> bool {
-        matches!(self,TValue::String(_))
+        matches!(self, TValue::String(_))
     }
     pub fn is_table(&self) -> bool {
-        matches!(self,TValue::Table(_))
+        matches!(self, TValue::Table(_))
     }
     pub fn is_function(&self) -> bool {
-        matches!(self,TValue::Function(_))
+        matches!(self, TValue::Function(_))
     }
     pub fn is_boolean(&self) -> bool {
-        matches!(self,TValue::Boolean(_))
+        matches!(self, TValue::Boolean(_))
     }
 
     pub(crate) fn is_false(&self) -> bool {
         match self {
             TValue::Nil => true,
-            TValue::Boolean(b) => ! *b,
+            TValue::Boolean(b) => !*b,
             _ => false,
         }
     }
@@ -207,28 +207,36 @@ pub struct Proto {
     /// the bytecode
     pub code: Vec<Instruction>,
     /// functions defined inside the function
-    pub p: Vec<ProtoRef>,
+    pub p: Vec<ProtoId>,
     /// map from opcodes to source lines
     pub lineinfo: Vec<usize>,
     /// information about local variables
     pub locvars: Vec<LocVar>,
-    /// number of upvalues
-    pub nups: usize,
-    pub linedefined: usize,
-    pub lastlinedefined: usize,
-    pub numparams: usize,
-    pub is_vararg: bool,
-    pub maxstacksize: usize,
+    /// upvalues information
+    pub upvalues: Vec<UpValDesc>,
     /// file name
     pub source: String,
+    pub linedefined: usize,
+    pub lastlinedefined: usize,
+    /// number of fixed parameters
+    pub numparams: usize,
+    pub is_vararg: bool,
+    /// maximum stack used by this function
+    pub maxstacksize: usize,
 }
 
 impl Proto {
     pub fn new(source: &str) -> Self {
         Self {
-            source:source.to_owned(),
+            source: source.to_owned(),
+            // registers 0/1 are always valid
+            maxstacksize: 2,
             ..Self::default()
         }
+    }
+
+    pub(crate) fn next_pc(&self) -> i32 {
+        self.code.len() as i32
     }
 }
 
@@ -243,18 +251,13 @@ pub struct UpVal {
 pub struct RClosure {
     pub f: LuaRustFunction,
     pub upvalues: Vec<TValue>,
-    pub env: TableRef,
-    pub envvalue: TValue,
 }
 
 impl RClosure {
-    pub fn new(func: LuaRustFunction, env: TableRef) -> Self {
-        let envvalue = TValue::Table(Rc::clone(&env));
+    pub fn new(func: LuaRustFunction) -> Self {
         Self {
             f: func,
             upvalues: Vec::new(),
-            env,
-            envvalue,
         }
     }
     pub fn borrow_upvalue(&self, index: usize) -> &TValue {
@@ -265,21 +268,17 @@ impl RClosure {
 /// Lua closure
 #[derive(Clone)]
 pub struct LClosure {
-    pub proto: ProtoRef,
+    pub proto: ProtoId,
     pub upvalues: Vec<UpVal>,
-    pub env: TableRef,
-    pub envvalue: TValue,
 }
 
 impl LClosure {
-    pub fn new(proto: ProtoRef, env: TableRef) -> Self {
-        let envvalue = TValue::Table(Rc::clone(&env));
-        Self {
-            proto,
-            upvalues: Vec::new(),
-            env,
-            envvalue,
+    pub fn new(proto: ProtoId, nupval: usize) -> Self {
+        let mut upvalues = Vec::new();
+        for _ in 0..nupval {
+            upvalues.push(UpVal::default())
         }
+        Self { proto, upvalues }
     }
 }
 
@@ -290,12 +289,6 @@ pub enum Closure {
 }
 
 impl Closure {
-    pub fn get_env(&self) -> TableRef {
-        match self {
-            Closure::Rust(cl) => Rc::clone(&cl.env),
-            Closure::Lua(cl) => Rc::clone(&cl.env),
-        }
-    }
     #[inline]
     pub fn add_lua_upvalue(&mut self, upval: UpVal) {
         if let Closure::Lua(cl) = self {
@@ -304,7 +297,21 @@ impl Closure {
         }
         unreachable!()
     }
-
+    #[inline]
+    pub fn set_lua_upvalue(&mut self, id: usize, upval: UpVal) {
+        if let Closure::Lua(cl) = self {
+            cl.upvalues[id] = upval;
+            return;
+        }
+        unreachable!()
+    }
+    #[inline]
+    pub fn borrow_lua_upval(&self, id: usize) -> &UpVal {
+        if let Closure::Lua(cl) = self {
+            return &cl.upvalues[id];
+        }
+        unreachable!()
+    }
     #[inline]
     pub fn get_lua_upvalue(&self, id: usize) -> TValue {
         if let Closure::Lua(cl) = self {
@@ -320,7 +327,7 @@ impl Closure {
         unreachable!()
     }
     #[inline]
-    pub fn set_lua_upvalue(&mut self, id: usize, value: TValue) {
+    pub fn set_lua_upval_value(&mut self, id: usize, value: TValue) {
         if let Closure::Lua(cl) = self {
             cl.upvalues[id].value = value;
             return;
@@ -335,28 +342,23 @@ impl Closure {
         unreachable!()
     }
     #[inline]
-    pub fn get_lua_protoid(&self) -> usize {
-        if let Closure::Lua(cl) = self {
-            return cl.proto;
-        }
-        unreachable!()
-    }
     pub fn get_proto_id(&self) -> usize {
         match self {
             Closure::Rust(_cl) => unreachable!(),
             Closure::Lua(cl) => cl.proto,
         }
     }
-    pub fn get_envvalue(&self) -> &TValue {
-        match self {
-            Closure::Rust(cl) => &cl.envvalue,
-            Closure::Lua(cl) => &cl.envvalue,
-        }
-    }
     pub fn get_nupvalues(&self) -> usize {
         match self {
             Closure::Rust(cl) => cl.upvalues.len(),
             Closure::Lua(cl) => cl.upvalues.len(),
+        }
+    }
+    pub fn borrow_lua_closure(&self) -> &LClosure {
+        if let Closure::Lua(lcl) = self {
+            lcl
+        } else {
+            unreachable!()
         }
     }
 }

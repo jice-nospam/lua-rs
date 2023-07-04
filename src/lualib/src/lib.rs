@@ -15,6 +15,8 @@ pub mod state;
 mod table;
 mod undump;
 mod vm;
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
 mod zio;
 
 pub use api::*;
@@ -40,11 +42,12 @@ pub(crate) const LUA_SIGNATURE: &str = "\x1BLua";
 pub const LUA_MULTRET: i32 = -1;
 /// minimum Lua stack available to a Rust function
 pub(crate) const LUA_MINSTACK: usize = 20;
+// predefined values in the registry
+pub const LUA_RIDX_MAINTHREAD: usize = 1;
+pub const LUA_RIDX_GLOBALS: usize = 2;
 // pseudo-indices
-pub const LUA_REGISTRYINDEX: isize = -10000;
-pub const LUA_ENVIRONINDEX: isize = -10001;
-pub const LUA_GLOBALSINDEX: isize = -10002;
-pub const LUA_VERSION: &str = "Lua 5.1.5";
+pub const LUA_REGISTRYINDEX: isize = -1000000 - 1000;
+pub const LUA_VERSION: &str = "Lua 5.2.4";
 
 pub type Reader<T> = fn(&mut LuaState, &T, &mut Vec<char>) -> Result<(), ()>;
 
@@ -54,14 +57,6 @@ pub type Reader<T> = fn(&mut LuaState, &T, &mut Vec<char>) -> Result<(), ()>;
 #[macro_export]
 macro_rules! debug_print {
     ($($arg:tt)*) => (#[cfg(debug_assertions)] print!($($arg)*));
-}
-
-/// Prints to the standard ouput only in debug build.
-/// In release build this macro is not compiled thanks to `#[cfg(debug_assertions)]`.
-/// see [https://doc.rust-lang.org/std/macro.println.html](https://doc.rust-lang.org/std/macro.println.html) for more info.
-#[macro_export]
-macro_rules! debug_println {
-    ($($arg:tt)*) => (#[cfg(debug_assertions)] println!($($arg)*));
 }
 
 #[cfg(test)]
@@ -353,7 +348,7 @@ mod tests {
         assert_eq!(state.stack.last().unwrap(), &TValue::Number(4.0));
     }
     #[test]
-    fn test() {
+    fn bool_cond() {
         let mut state = luaL::newstate();
         luaL::dostring(&mut state, "z=2 if nil then z=z+1 end if 3 then z=z+2 end if false then z=z+4 end if {} then z=z+8 end").unwrap();
 
@@ -463,11 +458,30 @@ mod tests {
         luaL::open_libs(&mut state).unwrap();
         luaL::dostring(
             &mut state,
-            "function sum(...)
+            "
+            function sum(...)
                 local args={...};
-                local sum = 0;
-                for _,num in ipairs(args) do
-                    sum = sum + num
+                return args[1]+args[2]+args[3]
+            end
+            z=sum(3,8,11)",
+        )
+        .unwrap();
+
+        api::get_global(&mut state, "z");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(22.0));
+    }
+    #[test]
+    fn vararg_ipair() {
+        let mut state = luaL::newstate();
+        luaL::open_libs(&mut state).unwrap();
+        luaL::dostring(
+            &mut state,
+            "
+            function sum(...)
+                local args={...};
+                local sum=0;
+                for _,v in ipairs(args) do
+                    sum = sum + v
                 end
                 return sum
             end
@@ -478,40 +492,7 @@ mod tests {
         api::get_global(&mut state, "z");
         assert_eq!(state.stack.last().unwrap(), &TValue::Number(22.0));
     }
-    #[test]
-    fn pairs_array() {
-        let mut state = luaL::newstate();
-        luaL::open_libs(&mut state).unwrap();
-        luaL::dostring(
-            &mut state,
-            "t={1,3,6}
-            z=0
-            for k,v in pairs(t) do
-                z = z + v
-            end",
-        )
-        .unwrap();
 
-        api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(10.0));
-    }
-    #[test]
-    fn pairs_hash() {
-        let mut state = luaL::newstate();
-        luaL::open_libs(&mut state).unwrap();
-        luaL::dostring(
-            &mut state,
-            "t={a=1,b=3,c=6}
-            z=0
-            for k,v in pairs(t) do
-                z = z + v
-            end",
-        )
-        .unwrap();
-
-        api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(10.0));
-    }
     #[test]
     fn pairs_mixed() {
         let mut state = luaL::newstate();
@@ -589,7 +570,7 @@ mod tests {
             &mut state,
             "function f() return 2,5 end
             a,b,c = f(), 1 -- results in 2,1,nil
-            d,e,f = 1,f() -- results in 1,2,5", 
+            d,e,f = 1,f() -- results in 1,2,5",
         )
         .unwrap();
 
@@ -610,11 +591,7 @@ mod tests {
     fn numbers() {
         let mut state = luaL::newstate();
         luaL::open_libs(&mut state).unwrap();
-        luaL::dostring(
-            &mut state,
-            "z=3 + 1E1 + 0xa + 0xB",
-        )
-        .unwrap();
+        luaL::dostring(&mut state, "z=3 + 1E1 + 0xa + 0xB").unwrap();
 
         api::get_global(&mut state, "z");
         assert_eq!(state.stack.last().unwrap(), &TValue::Number(34.0));

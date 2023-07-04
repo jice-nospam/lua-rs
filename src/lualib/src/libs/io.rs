@@ -92,33 +92,12 @@ const FILE_FUNCS: [LibReg; 9] = [
     },
 ];
 
-enum IoType {
-    Input,
-    Output,
-    Error,
-}
-
-pub fn lib_open_io(state: &mut LuaState) -> Result<i32, ()> {
-    //create_metatable(state);
-    // create (private) environment (with fields IO_INPUT, IO_OUTPUT, __close)
-    //api::create_table(state,2,1);
-    //api::replace(state, LUA_ENVIRONINDEX);
-    // open library
-    luaL::register(state, "io", &IO_FUNCS).map_err(|_| ())?;
-    // create and set default files
-    //create_std_file(state,IoType::Input,std::io::stdin(),"stdin");
-    //create_std_file(state,IoType::Output,std::io::stdout(),"stdout");
-    //create_std_file(state,IoType::Error,std::io::stderr(),"stderr");
-    // create environment for 'popen'
-    Ok(1)
-}
-
-fn create_std_file<T>(_state: &mut LuaState, _input: IoType, _stream: T, _arg: &str) {
-    todo!()
-}
-
-fn create_metatable(_state: &mut LuaState) {
-    todo!()
+fn create_metatable(state: &mut LuaState) {
+    luaL::new_metatable(state,"FILE"); // create metatable for file handles
+    api::push_value(state, -1); // push metatable
+    api::set_field(state, -2, "__index"); // metatable.__index = metatable
+    luaL::set_funcs(state, &FILE_FUNCS, 0); // add file methods to new metatable
+    api::pop(state,1); // pop new metatable
 }
 
 pub fn io_close(_state: &mut LuaState) -> Result<i32, ()> {
@@ -196,4 +175,11 @@ pub fn io_gc(_state: &mut LuaState) -> Result<i32, ()> {
 }
 pub fn io_tostring(_state: &mut LuaState) -> Result<i32, ()> {
     todo!();
+}
+
+
+pub fn lib_open_io(state: &mut LuaState) -> Result<i32, ()> {
+    luaL::new_lib(state, &IO_FUNCS);
+    create_metatable(state);
+    Ok(1)
 }

@@ -7,7 +7,7 @@
 
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-use crate::{object::TValue, LuaNumber, LuaState};
+use crate::{object::TValue, LuaNumber};
 
 pub type TableRef = Rc<RefCell<Table>>;
 
@@ -79,6 +79,13 @@ impl Table {
             &self.array[key - 1]
         }
     }
+    pub fn set_num(&mut self, key: usize, value: TValue) {
+        if key > self.array.len() {
+            let new_size = key.max(self.array.len() * 2);
+            self.array.resize(new_size, TValue::Nil);
+        } 
+        self.array[key-1] = value;
+    }
     /// iterator over both the array and hashmap
     /// returns (next_key, value)
     /// start with key = TValue::Nil then call until it returns (nil,nil)
@@ -89,7 +96,7 @@ impl Table {
                     // return first non nil value
                     for (i, v) in self.array.iter().enumerate() {
                         if !v.is_nil() {
-                            return (TValue::Number(i as LuaNumber), v.clone());
+                            return (TValue::Number(i as LuaNumber + 1.0), v.clone());
                         }
                     }
                 }
@@ -103,11 +110,11 @@ impl Table {
             }
             TValue::Number(idx) => {
                 if idx.fract() == 0.0 && *idx >= 0.0 {
-                    if (*idx as usize) < self.array.len()-1 {
+                    if (*idx as usize) < self.array.len() {
                         // key is an integer. get next non nil value
-                        for (i, v) in self.array.iter().enumerate().skip(*idx as usize + 1) {
+                        for (i, v) in self.array.iter().enumerate().skip(*idx as usize) {
                             if !v.is_nil() {
-                                return (TValue::Number(i as LuaNumber), v.clone());
+                                return (TValue::Number(i as LuaNumber+1.0), v.clone());
                             }
                         }
                     } else {
@@ -153,8 +160,9 @@ impl Table {
                 }
                 Some(&self.array[n - 1])
             }
-            TValue::String(_) => self.node.get(key),
-            _ => todo!(),
+            _ => {
+                self.node.get(key)
+            },
         }
     }
 }

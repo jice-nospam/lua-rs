@@ -4,7 +4,7 @@ Status :
 
     - ☐ to do
     - ☑ done
-    - ☒ won't be done (no wasm-unknown-unknown support)
+    - ☒ won't be done (no wasm-unknown-unknown support or not relevant)
 
 - base
     - ☐ assert(v [, message])
@@ -14,12 +14,12 @@ Status :
     - ☑ _G
     - ☐ getfenv([f])
     - ☐ getmetatable(object)
-    - ☐ ipairs(t)
+    - ☑ ipairs(t)
     - ☐ load(func [, chunkname])
     - ☒ loadfile([filename])
     - ☐ loadstring(string [, chunkname])
     - ☐ next(table [, index])
-    - ☐ pairs(t)
+    - ☑ pairs(t)
     - ☐ pcall(f, arg1, ···)
     - ☑ print(···)
     - ☐ rawequal(v1, v2)

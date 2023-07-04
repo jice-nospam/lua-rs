@@ -1,13 +1,11 @@
 //! Stack and Call structure of Lua
 
-use std::rc::Rc;
-
 use crate::{
     api::LuaError,
     luaG, luaU, luaY, luaZ,
     luaconf::LUAI_MAXRCALLS,
-    object::{Closure, LClosure, ProtoRef, StkId, TValue, UpVal},
-    state::{CallInfo, LuaState},
+    object::{Closure, ProtoId, StkId, TValue},
+    state::{CallInfo, LuaState, CIST_LUA},
     LUA_MINSTACK, LUA_SIGNATURE,
 };
 
@@ -22,8 +20,6 @@ pub(crate) enum PrecallStatus {
     Rust,
     /// initiated a call to a Lua function
     Lua,
-    /// Rust function yielded
-    RustYield,
 }
 
 pub struct SParser<T> {
@@ -57,7 +53,7 @@ impl LuaState {
     ///  The arguments are on the stack, right after the function.
     ///  When returns, all the results are on the stack, starting at the original
     ///  function position.
-    pub(crate) fn dcall(&mut self, cl_stkid: StkId, nresults: i32) -> Result<(), LuaError> {
+    pub(crate) fn dcall(&mut self, cl_stkid: StkId, nresults: i32, allow_yield: bool) -> Result<(), LuaError> {
         self.n_rcalls += 1;
         if self.n_rcalls >= LUAI_MAXRCALLS {
             if self.n_rcalls == LUAI_MAXRCALLS {
@@ -67,10 +63,16 @@ impl LuaState {
                 return Err(LuaError::ErrorHandlerError);
             }
         }
-        if let TValue::Function(_cl) = &self.stack[cl_stkid] {
-            if let PrecallStatus::Lua = self.dprecall(cl_stkid, nresults)? {
-                self.vexecute(1)?;
+        if ! allow_yield {
+            self.nny+=1;
+        }
+        if self.stack[cl_stkid].is_function() {
+            if let PrecallStatus::Lua = self.dprecall(cl_stkid, nresults)? { // is a Lua function ?
+                self.vexecute()?; // call it
             }
+        }
+        if ! allow_yield {
+            self.nny -= 1;
         }
         self.n_rcalls -= 1;
         Ok(())
@@ -91,12 +93,7 @@ impl LuaState {
                 unreachable!()
             }
         };
-        let cl = if let TValue::Function(cl) = &self.stack[cl_stkid] {
-            cl.clone()
-        } else {
-            unreachable!()
-        };
-        self.base_ci[self.ci].saved_pc = self.saved_pc;
+        let cl = self.get_closure_ref(cl_stkid);
         let cl=cl.borrow();
         match &*cl {
             Closure::Lua(cl) => {
@@ -119,10 +116,9 @@ impl LuaState {
                     base,
                     top: base + self.protos[cl.proto].maxstacksize,
                     nresults,
+                    call_status: CIST_LUA,
                     ..Default::default()
                 };
-                self.base = base;
-                self.saved_pc = 0;
                 self.stack.resize(ci.top, TValue::Nil);
                 self.base_ci.push(ci);
                 self.ci += 1;
@@ -138,22 +134,17 @@ impl LuaState {
                     nresults,
                     ..Default::default()
                 };
-                self.base = cl_stkid + 1;
                 self.base_ci.push(ci);
                 self.ci += 1;
                 // TODO handle hooks
                 let n = (cl.f)(self).map_err(|_| LuaError::RuntimeError)?;
-                if n < 0 {
-                    Ok(PrecallStatus::RustYield)
-                } else {
-                    self.poscall(self.stack.len() as u32 - n as u32);
-                    Ok(PrecallStatus::Rust)
-                }
+                self.poscall(self.stack.len() as u32 - n as u32);
+                Ok(PrecallStatus::Rust)
             }
         }
     }
 
-    pub(crate) fn adjust_varargs(&mut self, proto: ProtoRef, nargs: usize) -> usize {
+    pub(crate) fn adjust_varargs(&mut self, proto: ProtoId, nargs: usize) -> usize {
         let nfix_args = self.protos[proto].numparams;
         for _ in nargs..nfix_args {
             self.stack.push(TValue::Nil);
@@ -183,23 +174,21 @@ pub fn pcall<T>(
     let old_errfunc;
     let old_allowhook;
     let old_ci;
-    let old_n_ccalls;
+    let old_nny;
     {
-        old_n_ccalls = state.n_rcalls;
         old_ci = state.ci;
         old_allowhook = state.allowhook;
         old_errfunc = state.errfunc;
+        old_nny = state.nny;
         state.errfunc = ef;
     }
     let status = func(state, u);
     if let Err(e) = &status {
         state.close_func(old_top);
         seterrorobj(state, e);
-        state.n_rcalls = old_n_ccalls;
         state.ci = old_ci;
-        state.base = state.base_ci[state.ci].base;
-        state.saved_pc = state.base_ci[state.ci].saved_pc;
         state.allowhook = old_allowhook;
+        state.nny = old_nny;
     }
     state.errfunc = old_errfunc;
     status
@@ -211,19 +200,12 @@ fn f_parser<T>(state: &mut LuaState, parser: &mut SParser<T>) -> Result<i32, Lua
     } else {
         unreachable!()
     };
-    let proto = if c == LUA_SIGNATURE.chars().next() {
+    let cl = if c == LUA_SIGNATURE.chars().next() {
         luaU::undump
     } else {
         luaY::parser
     }(state, parser)?;
-    let nups = proto.nups;
-    let protoid = state.protos.len();
-    state.protos.push(proto);
-    let mut luacl = LClosure::new(protoid, Rc::clone(&state.l_gt));
-    for _ in 0..nups {
-        luacl.upvalues.push(UpVal::default());
-    }
-    let cl = Closure::Lua(luacl);
+    let cl = Closure::Lua(cl);
     state.stack.push(TValue::from(cl));
     Ok(0)
 }

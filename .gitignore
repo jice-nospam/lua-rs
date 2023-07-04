@@ -1,3 +1,6 @@
 /target
 Cargo.lock
 callgrind.*
+wasm/pkg
+www/node_modules
+www/package-lock.json

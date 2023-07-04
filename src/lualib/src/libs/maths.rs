@@ -119,15 +119,6 @@ const MATH_FUNCS: [LibReg; 28] = [
     },
 ];
 
-pub fn lib_open_math(state: &mut LuaState) -> Result<i32, ()> {
-    luaL::register(state, "math", &MATH_FUNCS).map_err(|_| ())?;
-    api::push_number(state, std::f64::consts::PI);
-    api::set_field(state, -2, "pi");
-    api::push_number(state, f64::INFINITY);
-    api::set_field(state, -2, "huge");
-    Ok(1)
-}
-
 pub fn math_abs(s: &mut LuaState) -> Result<i32, ()> {
     let value = luaL::check_number(s, 1).map_err(|_| ())?;
     api::push_number(s, value.abs());
@@ -221,6 +212,8 @@ pub fn math_max(s: &mut LuaState) -> Result<i32, ()> {
     api::push_number(s, dmax);
     Ok(1)
 }
+
+/// Returns the minimum value among its arguments.
 pub fn math_min(s: &mut LuaState) -> Result<i32, ()> {
     let n = api::get_top(s) as isize; // number of arguments
     let mut dmin = luaL::check_number(s, 1).map_err(|_| ())?;
@@ -279,6 +272,15 @@ pub fn math_tanh(s: &mut LuaState) -> Result<i32, ()> {
 pub fn math_tan(s: &mut LuaState) -> Result<i32, ()> {
     let value = luaL::check_number(s, 1).map_err(|_| ())?;
     api::push_number(s, value.tan());
+    Ok(1)
+}
+
+pub fn lib_open_math(state: &mut LuaState) -> Result<i32, ()> {
+    luaL::new_lib(state, &MATH_FUNCS);
+    api::push_number(state, std::f64::consts::PI);
+    api::set_field(state, -2, "pi");
+    api::push_number(state, f64::INFINITY);
+    api::set_field(state, -2, "huge");
     Ok(1)
 }
 

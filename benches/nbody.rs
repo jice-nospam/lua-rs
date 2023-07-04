@@ -1,9 +1,9 @@
-extern crate lua_rs;
+extern crate lualib;
 extern crate rlua;
 
 use criterion::Criterion;
 
-use lua_rs::luaL;
+use lualib::luaL;
 
 macro_rules! bench_name {
     () => ( "nbody" )

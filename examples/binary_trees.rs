@@ -1,5 +1,5 @@
-use lua_rs as lua;
-use lua_rs::luaL;
+use lualib as lua;
+use lualib::luaL;
 
 const LUA_SRC:&str = include_str!("../benches/lua/binary-trees.lua");
 

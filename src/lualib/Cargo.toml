@@ -1,0 +1,15 @@
+[package]
+name = "lualib"
+version = "0.1.0"
+authors = ["jice <jice.nospam@gmail.com>"]
+edition = "2021"
+
+[target.wasm32-unknown-unknown.dependencies]
+wasm-bindgen = "0.2"
+
+[lib]
+name = "lualib"
+crate-type = ["rlib"]
+
+[features]
+debug_logs = []

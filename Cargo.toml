@@ -3,11 +3,23 @@ name = "lua-rs"
 version = "0.1.0"
 authors = ["jice <jice.nospam@gmail.com>"]
 edition = "2021"
+description = "Lua reimplementation in pure, safe Rust"
+repository = "https://github.com/jice-nospam/lua-rs"
+license = "MIT"
+
+[[bin]]
+name = "lua"
+path = "src/lua/main.rs"
+
+[lib]
+name = "luawasm"
+path = "src/lua/main.rs"
 
 [dependencies]
+lualib = { path = "src/lualib" }
 
 [features]
-debug_logs = []
+debug_logs = ["lualib/debug_logs"]
 
 [dev-dependencies]
 criterion="*"
@@ -20,3 +32,6 @@ debug-assertions = false
 [[bench]]
 name = "main"
 harness = false
+
+[workspace]
+members = ["wasm"]

@@ -1,13 +1,10 @@
 //! Basic library
 
-use crate::{
-    api, api::LuaError, luaL, object::TValue, state::LuaState, LuaNumber, LuaRustFunction,
-    LUA_GLOBALSINDEX, LUA_VERSION, lex::str2d,
-};
+use crate::{api, lex::str2d, luaL, object::TValue, state::LuaState, LuaRustFunction, LUA_VERSION};
 
 use super::LibReg;
 
-const BASE_FUNCS: [LibReg; 22] = [
+const BASE_FUNCS: [LibReg; 21] = [
     LibReg {
         name: "assert",
         func: luab_assert,
@@ -21,12 +18,12 @@ const BASE_FUNCS: [LibReg; 22] = [
         func: luab_error,
     },
     LibReg {
-        name: "getfenv",
-        func: luab_getfenv,
-    },
-    LibReg {
         name: "getmetatable",
         func: luab_getmetatable,
+    },
+    LibReg {
+        name: "ipairs",
+        func: luab_ipairs,
     },
     LibReg {
         name: "loadfile",
@@ -37,12 +34,12 @@ const BASE_FUNCS: [LibReg; 22] = [
         func: luab_load,
     },
     LibReg {
-        name: "loadstring",
-        func: luab_loadstring,
-    },
-    LibReg {
         name: "next",
         func: luab_next,
+    },
+    LibReg {
+        name: "pairs",
+        func: luab_pairs,
     },
     LibReg {
         name: "pcall",
@@ -57,6 +54,10 @@ const BASE_FUNCS: [LibReg; 22] = [
         func: luab_rawequal,
     },
     LibReg {
+        name: "rawlen",
+        func: luab_rawlen,
+    },
+    LibReg {
         name: "rawget",
         func: luab_rawget,
     },
@@ -67,10 +68,6 @@ const BASE_FUNCS: [LibReg; 22] = [
     LibReg {
         name: "select",
         func: luab_select,
-    },
-    LibReg {
-        name: "setfenv",
-        func: luab_setfenv,
     },
     LibReg {
         name: "setmetatable",
@@ -89,61 +86,10 @@ const BASE_FUNCS: [LibReg; 22] = [
         func: luab_type,
     },
     LibReg {
-        name: "unpack",
-        func: luab_unpack,
-    },
-    LibReg {
         name: "xpcall",
         func: luab_xpcall,
     },
 ];
-
-const CO_FUNCS: [LibReg; 6] = [
-    LibReg {
-        name: "create",
-        func: luab_cocreate,
-    },
-    LibReg {
-        name: "resume",
-        func: luab_coresume,
-    },
-    LibReg {
-        name: "running",
-        func: luab_corunning,
-    },
-    LibReg {
-        name: "status",
-        func: luab_costatus,
-    },
-    LibReg {
-        name: "wrap",
-        func: luab_cowrap,
-    },
-    LibReg {
-        name: "yield",
-        func: luab_yield,
-    },
-];
-
-pub fn luab_cocreate(_state: &mut LuaState) -> Result<i32, ()> {
-    todo!();
-}
-pub fn luab_coresume(_state: &mut LuaState) -> Result<i32, ()> {
-    todo!();
-}
-pub fn luab_corunning(_state: &mut LuaState) -> Result<i32, ()> {
-    todo!();
-}
-pub fn luab_costatus(_state: &mut LuaState) -> Result<i32, ()> {
-    todo!();
-}
-pub fn luab_cowrap(_state: &mut LuaState) -> Result<i32, ()> {
-    todo!();
-}
-pub fn luab_yield(_state: &mut LuaState) -> Result<i32, ()> {
-    todo!();
-}
-
 pub fn luab_assert(_state: &mut LuaState) -> Result<i32, ()> {
     todo!();
 }
@@ -153,9 +99,6 @@ pub fn luab_dofile(_state: &mut LuaState) -> Result<i32, ()> {
 pub fn luab_error(_state: &mut LuaState) -> Result<i32, ()> {
     todo!();
 }
-pub fn luab_getfenv(_state: &mut LuaState) -> Result<i32, ()> {
-    todo!();
-}
 pub fn luab_getmetatable(_state: &mut LuaState) -> Result<i32, ()> {
     todo!();
 }
@@ -163,9 +106,6 @@ pub fn luab_load(_state: &mut LuaState) -> Result<i32, ()> {
     todo!();
 }
 pub fn luab_loadfile(_state: &mut LuaState) -> Result<i32, ()> {
-    todo!();
-}
-pub fn luab_loadstring(_state: &mut LuaState) -> Result<i32, ()> {
     todo!();
 }
 pub fn luab_pcall(_state: &mut LuaState) -> Result<i32, ()> {
@@ -186,9 +126,9 @@ pub fn luab_print(s: &mut LuaState) -> Result<i32, ()> {
             // get result
             Some(svalue) => {
                 if i > 1 {
-                    print!("\t");
+                    _ = write!(s.stdout, "\t");
                 }
-                print!("{}", svalue);
+                _ = write!(s.stdout, "{}", svalue);
                 api::pop(s, 1);
             }
             _ => {
@@ -197,10 +137,13 @@ pub fn luab_print(s: &mut LuaState) -> Result<i32, ()> {
             }
         }
     }
-    println!();
+    _ = writeln!(s.stdout);
     Ok(0)
 }
 pub fn luab_rawequal(_state: &mut LuaState) -> Result<i32, ()> {
+    todo!();
+}
+pub fn luab_rawlen(_state: &mut LuaState) -> Result<i32, ()> {
     todo!();
 }
 pub fn luab_rawget(_state: &mut LuaState) -> Result<i32, ()> {
@@ -210,9 +153,6 @@ pub fn luab_rawset(_state: &mut LuaState) -> Result<i32, ()> {
     todo!();
 }
 pub fn luab_select(_state: &mut LuaState) -> Result<i32, ()> {
-    todo!();
-}
-pub fn luab_setfenv(_state: &mut LuaState) -> Result<i32, ()> {
     todo!();
 }
 pub fn luab_setmetatable(_state: &mut LuaState) -> Result<i32, ()> {
@@ -266,121 +206,106 @@ pub fn luab_tostring(s: &mut LuaState) -> Result<i32, ()> {
 pub fn luab_type(_state: &mut LuaState) -> Result<i32, ()> {
     todo!();
 }
-pub fn luab_unpack(state: &mut LuaState) -> Result<i32, ()> {
-    luaL::check_table(state, 1).map_err(|_| ())?;
-    let mut i=luaL::opt_int(state,2).unwrap_or(1);
-    let len=luaL::obj_len(state,1);
-    let e = luaL::opt_int(state,3).unwrap_or(len as i32);
-    if i > e {
-        return Ok(0); // empty range
-    }
-    let n=e-i+1; // number of elements
-    if n <= 0 {
-        return Ok(0); // empty range
-    }
-    api::raw_get_i(state,1,i);
-    while i < e {
-        i+=1;
-        api::raw_get_i(state,1,i);
-    }
-    Ok(n)
-}
+
 pub fn luab_xpcall(_state: &mut LuaState) -> Result<i32, ()> {
     todo!();
 }
 
-pub fn luab_ipairs(s: &mut LuaState) -> Result<i32, ()> {
-    luaL::check_table(s, 1)?;
-    api::push_value(s, LUA_GLOBALSINDEX-1); // generator
-    api::push_value(s, 1); // state
-    api::push_number(s, 0.0); // and initial value
+fn pairs_meta(
+    s: &mut LuaState,
+    method: &str,
+    is_zero: bool,
+    iter: LuaRustFunction,
+) -> Result<i32, ()> {
+    if !luaL::get_meta_field(s, 1, method) {
+        // no metamethod?
+        luaL::check_table(s, 1)?; // argument must be a table
+        api::push_rust_function(s, iter, 0); // will return generator,
+        api::push_value(s, 1); // state,
+        if is_zero {
+            api::push_number(s, 0.0); // and initial value
+        } else {
+            api::push_nil(s);
+        }
+    } else {
+        api::push_value(s, 1); // argument 'self' to metamethod
+        api::call(s, 1, 3).map_err(|_| ())?; // get 3 values from metamethod
+    }
     Ok(3)
 }
-pub fn ipairsaux(s: &mut LuaState) -> Result<i32, ()> {
-    let i =luaL::check_integer(s, 2)? + 1; // next value
+
+pub fn luab_ipairs(s: &mut LuaState) -> Result<i32, ()> {
+    pairs_meta(s, "__ipairs", true, ipairs_aux)
+}
+pub fn ipairs_aux(s: &mut LuaState) -> Result<i32, ()> {
+    let i = luaL::check_integer(s, 2)? + 1; // next value
     luaL::check_table(s, 1)?;
     api::push_number(s, i as f64);
     api::raw_get_i(s, 1, i as i32);
     if api::is_nil(s, -1) {
-        Ok(0)
+        Ok(1)
     } else {
         Ok(2)
     }
 }
 pub fn luab_pairs(s: &mut LuaState) -> Result<i32, ()> {
-    luaL::check_table(s, 1)?;
-    api::push_value(s, LUA_GLOBALSINDEX-1); // generator
-    api::push_value(s, 1); // state
-    api::push_nil(s); // and initial value
-    Ok(3)
+    pairs_meta(s, "__pairs", false, luab_next)
 }
+
 pub fn luab_next(s: &mut LuaState) -> Result<i32, ()> {
     luaL::check_table(s, 1)?;
-    api::set_top(s,2); // create a 2nd argument if there isn't one
-    if api::next(s,1) {
+    api::set_top(s, 2); // create a 2nd argument if there isn't one
+    if api::next(s, 1) {
         Ok(2)
     } else {
         api::push_nil(s);
         Ok(1)
     }
 }
-pub fn luab_newproxy(_state: &mut LuaState) -> Result<i32, ()> {
-    todo!();
-}
 
 pub fn lib_open_base(state: &mut LuaState) -> Result<i32, ()> {
-    base_open(state).unwrap();
-    luaL::register(state, "coroutine", &CO_FUNCS).unwrap();
-    Ok(2)
-}
-
-fn base_open(state: &mut LuaState) -> Result<(), LuaError> {
     // set global _G
-    state.push_value(LUA_GLOBALSINDEX);
-    state.set_global("_G");
+    api::push_global_table(state);
+    api::push_global_table(state);
+    api::set_field(state, -2, "_G");
     // open lib into global table
-    luaL::register(state, "_G", &BASE_FUNCS)?;
+    luaL::set_funcs(state, &BASE_FUNCS, 0);
     // set global _VERSION
-    state.push_literal(LUA_VERSION);
-    state.set_global("_VERSION");
-    // `ipairs' and `pairs' need auxiliary functions as upvalues
-    auxopen(state, "ipairs", luab_ipairs, ipairsaux);
-    auxopen(state, "pairs", luab_pairs, luab_next);
-    // `newproxy' needs a weaktable as upvalue
-    state.create_table(); // new table `w'
-    state.push_value(-1); // `w' will be its own metatable
-    state.set_metatable(-2);
-    state.push_literal("kv");
-    state.set_field(-2, "__mode"); // metatable(w).__mode = "kv"
-    state.push_rust_closure(luab_newproxy, 1);
-    state.set_global("newproxy");
-    Ok(())
-}
-
-fn auxopen(state: &mut LuaState, name: &str, f: LuaRustFunction, u: LuaRustFunction) {
-    state.push_rust_function(u);
-    state.push_rust_closure(f, 1);
-    state.set_field(-2, name);
+    api::push_literal(state, LUA_VERSION);
+    api::set_field(state, -2, "_VERSION");
+    Ok(1)
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{luaL, object::TValue, api};
+    use crate::{api, luaL, object::TValue, LUA_VERSION};
+    #[test]
+    fn baselib_defines_g() {
+        let mut state = luaL::newstate();
+        luaL::open_libs(&mut state).unwrap();
+        api::get_global(&mut state, "_G");
+        assert!(matches!(state.stack.last().unwrap(), TValue::Table(_)));
+    }
+    #[test]
+    fn baselib_defines_print() {
+        let mut state = luaL::newstate();
+        luaL::open_libs(&mut state).unwrap();
+
+        api::get_global(&mut state, "print");
+        assert!(matches!(state.stack.last().unwrap(), TValue::Function(_)));
+    }
+    #[test]
+    fn baselib_defines_version() {
+        let mut state = luaL::newstate();
+        luaL::open_libs(&mut state).unwrap();
+        api::get_global(&mut state, "_VERSION");
+        assert!(*state.stack.last().unwrap() == TValue::from(LUA_VERSION));
+    }
     #[test]
     fn print_vararg() {
         let mut state = luaL::newstate();
         luaL::open_libs(&mut state).unwrap();
         luaL::dostring(&mut state, "print('hello',' ','world')").unwrap();
-    }
-    #[test]
-    fn unpack() {
-        let mut state = luaL::newstate();
-        luaL::open_libs(&mut state).unwrap();
-        luaL::dostring(&mut state, "a,b=unpack({3,5})").unwrap();
-        api::get_global(&mut state, "a");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(3.0));
-        api::get_global(&mut state, "b");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(5.0));
     }
     #[test]
     fn global_env() {
@@ -389,5 +314,56 @@ mod tests {
         luaL::dostring(&mut state, "a=3 z=_G.a").unwrap();
         api::get_global(&mut state, "z");
         assert_eq!(state.stack.last().unwrap(), &TValue::Number(3.0));
+    }
+    #[test]
+    fn ipairs() {
+        let mut state = luaL::newstate();
+        luaL::open_libs(&mut state).unwrap();
+        luaL::dostring(
+            &mut state,
+            "t={1,3,6}
+            z=0
+            for _,v in ipairs(t) do
+                z = z + v
+            end",
+        )
+        .unwrap();
+
+        api::get_global(&mut state, "z");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(10.0));
+    }
+    #[test]
+    fn pairs_array() {
+        let mut state = luaL::newstate();
+        luaL::open_libs(&mut state).unwrap();
+        luaL::dostring(
+            &mut state,
+            "t={1,3,6}
+            z=0
+            for k,v in pairs(t) do
+                z = z + v
+            end",
+        )
+        .unwrap();
+
+        api::get_global(&mut state, "z");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(10.0));
+    }
+    #[test]
+    fn pairs_hash() {
+        let mut state = luaL::newstate();
+        luaL::open_libs(&mut state).unwrap();
+        luaL::dostring(
+            &mut state,
+            "t={a=1,b=3,c=6}
+            z=0
+            for k,v in pairs(t) do
+                z = z + v
+            end",
+        )
+        .unwrap();
+
+        api::get_global(&mut state, "z");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(10.0));
     }
 }

@@ -6,9 +6,10 @@ use crate::{
     limits::MAX_LUA_STACK,
     object::TValue,
     opcodes::{
-        create_abc, create_abx, get_arg_a, get_arg_b, get_arg_c, get_arg_sbx, get_opcode,
-        is_reg_constant, rk_as_k, set_arg_a, set_arg_b, set_arg_c, set_arg_sbx, OpCode,
-        LFIELDS_PER_FLUSH, MAXARG_C, MAXARG_SBX, MAX_INDEX_RK, NO_JUMP, NO_REG,
+        create_abc, create_abx, create_ax, get_arg_a, get_arg_b, get_arg_c, get_arg_sbx,
+        get_opcode, is_reg_constant, rk_as_k, set_arg_a, set_arg_b, set_arg_c, set_arg_sbx, OpCode,
+        LFIELDS_PER_FLUSH, MAXARG_AX, MAXARG_BX, MAXARG_C, MAXARG_SBX, MAX_INDEX_RK, NO_JUMP,
+        NO_REG,
     },
     parser::{BinaryOp, ExpressionDesc, ExpressionKind, UnaryOp},
     state::LuaState,
@@ -26,32 +27,43 @@ pub(crate) fn discharge_vars<T>(
             exp.info = code_abc(lex, state, OpCode::GetUpVal as u32, 0, exp.info, 0)? as i32;
             exp.k = ExpressionKind::Relocable;
         }
-        ExpressionKind::GlobalVar => {
-            exp.info = code_abx(lex, state, OpCode::GetGlobal as u32, 0, exp.info as u32)? as i32;
-            exp.k = ExpressionKind::Relocable;
-        }
         ExpressionKind::Indexed => {
-            free_reg(lex, exp.aux as u32);
-            free_reg(lex, exp.info as u32);
-            exp.info = code_abc(lex, state, OpCode::GetTable as u32, 0, exp.info, exp.aux)? as i32;
+            let mut opcode = OpCode::GetTabUp; // assume 't' is an upvalue
+            free_reg(lex, exp.ind.idx);
+            if !exp.ind.is_t_upval {
+                // 't' is in a register?
+                free_reg(lex, exp.ind.t);
+                opcode = OpCode::GetTable;
+            }
+            exp.info = code_abc(
+                lex,
+                state,
+                opcode as u32,
+                0,
+                exp.ind.t as i32,
+                exp.ind.idx as i32,
+            )? as i32;
             exp.k = ExpressionKind::Relocable;
         }
         ExpressionKind::Call | ExpressionKind::VarArg => {
-            set_one_ret(lex, exp);
+            set_one_ret(lex, state, exp);
         }
         _ => (), // there is one value available (somewhere)
     }
     Ok(())
 }
 
-pub(crate) fn set_one_ret<T>(lex: &mut LexState<T>, exp: &mut ExpressionDesc) {
-    let fs = lex.borrow_fs(None);
+pub(crate) fn set_one_ret<T>(
+    lex: &mut LexState<T>,
+    state: &mut LuaState,
+    exp: &mut ExpressionDesc,
+) {
     if exp.k == ExpressionKind::Call {
         // expression is an open function call?
         exp.k = ExpressionKind::NonRelocable;
-        exp.info = get_arg_a(fs.f.code[exp.info as usize]) as i32;
+        exp.info = get_arg_a(lex.get_code(state, exp.info as usize)) as i32;
     } else if exp.k == ExpressionKind::VarArg {
-        set_arg_b(lex.borrow_mut_code(exp.info as usize), 2);
+        set_arg_b(lex.borrow_mut_code(state, exp.info as usize), 2);
         exp.k = ExpressionKind::Relocable;
     }
 }
@@ -65,7 +77,7 @@ pub(crate) fn code_abc<T>(
     c: i32,
 ) -> Result<u32, LuaError> {
     let o = create_abc(op, a, b, c);
-    code(lex, state, o, lex.lastline)
+    code(lex, state, o)
 }
 
 pub(crate) fn code_abx<T>(
@@ -76,7 +88,27 @@ pub(crate) fn code_abx<T>(
     bx: u32,
 ) -> Result<u32, LuaError> {
     let o = create_abx(op, a, bx);
-    code(lex, state, o, lex.lastline)
+    code(lex, state, o)
+}
+
+pub(crate) fn code_k<T>(
+    lex: &mut LexState<T>,
+    state: &mut LuaState,
+    reg: i32,
+    k: u32,
+) -> Result<u32, LuaError> {
+    if k <= MAXARG_BX as u32 {
+        code_abx(lex, state, OpCode::LoadK as u32, reg, k)
+    } else {
+        let p = code_abx(lex, state, OpCode::LoadKx as u32, reg, 0)?;
+        code_extra_arg(lex, state, k)?;
+        Ok(p)
+    }
+}
+
+fn code_extra_arg<T>(lex: &mut LexState<T>, state: &mut LuaState, k: u32) -> Result<u32, LuaError> {
+    debug_assert!(k <= MAXARG_AX as u32);
+    code(lex, state, create_ax(OpCode::ExtraArg as u32, k))
 }
 
 pub(crate) fn code_asbx<T>(
@@ -89,26 +121,39 @@ pub(crate) fn code_asbx<T>(
     code_abx(lex, state, op, a, (sbx + MAXARG_SBX) as u32)
 }
 
-fn code<T>(
-    lex: &mut LexState<T>,
-    state: &mut LuaState,
-    o: u32,
-    line: usize,
-) -> Result<u32, LuaError> {
+fn code<T>(lex: &mut LexState<T>, state: &mut LuaState, o: u32) -> Result<u32, LuaError> {
     discharge_jpc(lex, state)?; // pc' will change
-    let fs = lex.borrow_mut_fs(None);
-    let pc = fs.next_pc() as u32;
-    let f = &mut fs.f;
-    f.code.push(o);
-    f.lineinfo.push(line);
+    let line = lex.lastline;
+    let proto = lex.borrow_mut_proto(state, None);
+    let pc = proto.next_pc() as u32;
+    proto.code.push(o);
+    proto.lineinfo.push(line);
     Ok(pc)
 }
 
 fn discharge_jpc<T>(lex: &mut LexState<T>, state: &mut LuaState) -> Result<(), LuaError> {
-    let pc = lex.borrow_fs(None).next_pc();
+    let pc = lex.next_pc(state) as i32;
     let jpc = lex.borrow_fs(None).jpc;
     patch_list_aux(lex, state, jpc, pc, NO_REG, pc)?;
     lex.borrow_mut_fs(None).jpc = NO_JUMP;
+    Ok(())
+}
+
+pub(crate) fn patch_close<T>(
+    lex: &mut LexState<T>,
+    state: &mut LuaState,
+    list: i32,
+    level: usize,
+) -> Result<(), LuaError> {
+    // argument is +1 to reserve 0 as non-op
+    let level = level + 1;
+    let mut list = list;
+    while list != NO_JUMP {
+        let next = get_jump(lex, state, list);
+        let to_fix = lex.borrow_mut_code(state, list as usize);
+        set_arg_a(to_fix, level as u32);
+        list = next;
+    }
     Ok(())
 }
 
@@ -118,7 +163,7 @@ pub(crate) fn patch_list<T>(
     list: i32,
     target: i32,
 ) -> Result<(), LuaError> {
-    let pc = lex.borrow_fs(None).next_pc();
+    let pc = lex.next_pc(state) as i32;
     if target == pc {
         patch_to_here(lex, state, list)
     } else {
@@ -137,11 +182,11 @@ fn patch_list_aux<T>(
 ) -> Result<(), LuaError> {
     let mut jpc = jpc;
     while jpc != NO_JUMP {
-        let next = get_jump(lex, jpc);
-        if patch_test_reg(lex, jpc, reg) {
+        let next = get_jump(lex, state, jpc);
+        if patch_test_reg(lex, state, jpc, reg) {
             fix_jump(lex, state, jpc, vtarget)?;
         } else {
-            fix_jump(lex, state, jpc, dtarget)?;
+            fix_jump(lex, state, jpc, dtarget)?; // jump to default target
         }
         jpc = next;
     }
@@ -154,7 +199,7 @@ fn fix_jump<T>(
     pc: i32,
     dest: i32,
 ) -> Result<(), LuaError> {
-    let jmp = &mut lex.borrow_mut_fs(None).f.code[pc as usize];
+    let jmp = lex.borrow_mut_code(state, pc as usize);
     let offset = dest - (pc + 1);
     debug_assert!(dest != NO_JUMP);
     if offset.abs() > MAXARG_SBX {
@@ -164,8 +209,8 @@ fn fix_jump<T>(
     Ok(())
 }
 
-fn patch_test_reg<T>(lex: &mut LexState<T>, node: i32, reg: u32) -> bool {
-    let i = get_jump_control(lex, node);
+fn patch_test_reg<T>(lex: &mut LexState<T>, state: &mut LuaState, node: i32, reg: u32) -> bool {
+    let i = get_jump_control(lex, state, node);
     if get_opcode(*i) != OpCode::TestSet {
         return false; // cannot patch other instructions
     } else if reg != NO_REG && reg != get_arg_b(*i) {
@@ -197,24 +242,19 @@ pub(crate) fn store_var<T>(
             let e = exp2anyreg(lex, state, ex)?;
             code_abc(lex, state, OpCode::SetupVal as u32, e as i32, var.info, 0)?;
         }
-        ExpressionKind::GlobalVar => {
-            let e = exp2anyreg(lex, state, ex)?;
-            code_abx(
-                lex,
-                state,
-                OpCode::SetGlobal as u32,
-                e as i32,
-                var.info as u32,
-            )?;
-        }
         ExpressionKind::Indexed => {
+            let opcode = if var.ind.is_t_upval {
+                OpCode::SetTabUp
+            } else {
+                OpCode::SetTable
+            };
             let e = exp2rk(lex, state, ex)?;
             code_abc(
                 lex,
                 state,
-                OpCode::SetTable as u32,
-                var.info,
-                var.aux,
+                opcode as u32,
+                var.ind.t as i32,
+                var.ind.idx as i32,
                 e as i32,
             )?;
         }
@@ -232,7 +272,10 @@ pub(crate) fn indexed<T>(
     t: &mut ExpressionDesc,
     k: &mut ExpressionDesc,
 ) -> Result<(), LuaError> {
-    t.aux = exp2rk(lex, state, k)? as i32;
+    debug_assert!(t.t == t.f);
+    t.ind.t = t.info as u32;
+    t.ind.idx = exp2rk(lex, state, k)?;
+    t.ind.is_t_upval = t.k == ExpressionKind::UpValue;
     t.k = ExpressionKind::Indexed;
     Ok(())
 }
@@ -248,11 +291,11 @@ pub(crate) fn exp2rk<T>(
         | ExpressionKind::True
         | ExpressionKind::False
         | ExpressionKind::Nil => {
-            if lex.borrow_fs(None).f.k.len() <= MAX_INDEX_RK {
+            if lex.borrow_proto(state, None).k.len() <= MAX_INDEX_RK {
                 ex.info = match ex.k {
-                    ExpressionKind::Nil => nil_constant(lex) as i32,
-                    ExpressionKind::NumberConstant => number_constant(lex, ex.nval) as i32,
-                    _ => bool_constant(lex, ex.k == ExpressionKind::True) as i32,
+                    ExpressionKind::Nil => nil_constant(lex, state) as i32,
+                    ExpressionKind::NumberConstant => number_constant(lex, state, ex.nval) as i32,
+                    _ => bool_constant(lex, state, ex.k == ExpressionKind::True) as i32,
                 };
                 ex.k = ExpressionKind::Constant;
                 return Ok(rk_as_k(ex.info as u32));
@@ -270,20 +313,20 @@ pub(crate) fn exp2rk<T>(
     exp2anyreg(lex, state, ex)
 }
 
-fn bool_constant<T>(lex: &mut LexState<T>, val: bool) -> usize {
+fn bool_constant<T>(lex: &mut LexState<T>, state: &mut LuaState, val: bool) -> usize {
     let o = TValue::Boolean(val);
-    lex.borrow_mut_fs(None).add_constant(o.clone(), o)
+    lex.borrow_mut_fs(None).add_constant(state, o.clone(), o)
 }
 
-pub(crate) fn number_constant<T>(lex: &mut LexState<T>, val: f64) -> usize {
+pub(crate) fn number_constant<T>(lex: &mut LexState<T>, state: &mut LuaState, val: f64) -> usize {
     let o = TValue::Number(val);
-    lex.borrow_mut_fs(None).add_constant(o.clone(), o)
+    lex.borrow_mut_fs(None).add_constant(state, o.clone(), o)
 }
 
-fn nil_constant<T>(lex: &mut LexState<T>) -> usize {
+fn nil_constant<T>(lex: &mut LexState<T>, state: &mut LuaState) -> usize {
     // cannot use nil as key; instead use table itself to represent nil
     lex.borrow_mut_fs(None)
-        .add_constant(TValue::Nil, TValue::Nil)
+        .add_constant(state, TValue::Nil, TValue::Nil)
 }
 
 pub(crate) fn exp2val<T>(
@@ -315,25 +358,28 @@ pub(crate) fn exp2anyreg<T>(
             return Ok(ex.info as u32);
         }
     }
-    exp2nextreg(lex, state, ex)?;
+    exp2nextreg(lex, state, ex)?; // default
     Ok(ex.info as u32)
 }
 
-fn get_jump_control<T>(lex: &mut LexState<T>, pc: i32) -> &mut u32 {
-    let fs = lex.borrow_mut_fs(None);
-    let i = fs.f.code[pc as usize - 1];
+fn get_jump_control<'a, T>(
+    lex: &'a mut LexState<T>,
+    state: &'a mut LuaState,
+    pc: i32,
+) -> &'a mut u32 {
+    let i = lex.get_code(state, pc as usize - 1);
     let op = get_opcode(i);
     if pc >= 1 && op.is_test() {
-        lex.borrow_mut_code(pc as usize - 1)
+        lex.borrow_mut_code(state, pc as usize - 1)
     } else {
-        lex.borrow_mut_code(pc as usize)
+        lex.borrow_mut_code(state, pc as usize)
     }
 }
 
 /// get the new value of pc for this jump instruction
-fn get_jump<T>(lex: &mut LexState<T>, jpc: i32) -> i32 {
-    let fs = lex.borrow_mut_fs(None);
-    let offset = get_arg_sbx(fs.f.code[jpc as usize]);
+fn get_jump<T>(lex: &mut LexState<T>, state: &LuaState, jpc: i32) -> i32 {
+    let i = lex.get_code(state, jpc as usize);
+    let offset = get_arg_sbx(i);
     if offset == NO_JUMP {
         // point to itself represents end of list
         NO_JUMP // end of list
@@ -353,6 +399,18 @@ pub(crate) fn exp2nextreg<T>(
     exp2reg(lex, state, exp, lex.borrow_fs(None).freereg as u32 - 1)
 }
 
+pub(crate) fn exp2anyregup<T>(
+    lex: &mut LexState<T>,
+    state: &mut LuaState,
+    exp: &mut ExpressionDesc,
+) -> Result<(), LuaError> {
+    if exp.k != ExpressionKind::UpValue || has_jumps(exp) {
+        exp2anyreg(lex, state, exp).map(|_| ())
+    } else {
+        Ok(())
+    }
+}
+
 fn exp2reg<T>(
     lex: &mut LexState<T>,
     state: &mut LuaState,
@@ -360,13 +418,13 @@ fn exp2reg<T>(
     reg: u32,
 ) -> Result<(), LuaError> {
     discharge2reg(lex, state, exp, reg)?;
-    if let ExpressionKind::Jump = exp.k {
+    if exp.k == ExpressionKind::Jump {
         concat_jump(lex, state, &mut exp.t, exp.info)?; // put this jump in `t' list
     }
     if has_jumps(exp) {
         let mut p_f = NO_JUMP; // position of an eventual LOAD false
         let mut p_t = NO_JUMP; // position of an eventual LOAD true
-        if need_value(lex, exp.t) || need_value(lex, exp.f) {
+        if need_value(lex, state, exp.t) || need_value(lex, state, exp.f) {
             let fj = if let ExpressionKind::Jump = exp.k {
                 NO_JUMP
             } else {
@@ -376,7 +434,7 @@ fn exp2reg<T>(
             p_t = code_label(lex, state, reg, 1, 0)?;
             patch_to_here(lex, state, fj)?;
         }
-        let final_pc = get_label(lex); // position after whole expression
+        let final_pc = get_label(lex, state); // position after whole expression
         patch_list_aux(lex, state, exp.f, final_pc, reg, p_f)?;
         patch_list_aux(lex, state, exp.t, final_pc, reg, p_t)?;
     }
@@ -416,16 +474,13 @@ pub(crate) fn set_returns<T>(
     if exp.k == ExpressionKind::Call {
         // expression is an open function call?
         let pc = exp.info as usize;
-        set_arg_c(
-            &mut lex.borrow_mut_fs(None).f.code[pc],
-            (nresults + 1) as u32,
-        );
+        set_arg_c(lex.borrow_mut_code(state, pc), (nresults + 1) as u32);
     } else if exp.k == ExpressionKind::VarArg {
         let pc = exp.info as usize;
         {
-            set_arg_b(lex.borrow_mut_code(pc), (nresults + 1) as u32);
+            set_arg_b(lex.borrow_mut_code(state, pc), (nresults + 1) as u32);
             let freereg = lex.borrow_fs(None).freereg as u32;
-            set_arg_a(lex.borrow_mut_code(pc), freereg);
+            set_arg_a(lex.borrow_mut_code(state, pc), freereg);
         }
         reserve_regs(lex, state, 1)?;
     }
@@ -434,9 +489,10 @@ pub(crate) fn set_returns<T>(
 
 /// returns current `pc' and marks it as a jump target (to avoid wrong
 ///  optimizations with consecutive instructions not in the same basic block).
-pub(crate) fn get_label<T>(lex: &mut LexState<T>) -> i32 {
+pub(crate) fn get_label<T>(lex: &mut LexState<T>, state: &mut LuaState) -> i32 {
+    let pc = lex.next_pc(state) as i32;
     let fs = lex.borrow_mut_fs(None);
-    fs.last_target = fs.next_pc();
+    fs.last_target = pc;
     fs.last_target
 }
 
@@ -445,7 +501,7 @@ pub(crate) fn patch_to_here<T>(
     state: &mut LuaState,
     list: i32,
 ) -> Result<(), LuaError> {
-    get_label(lex);
+    get_label(lex, state);
     let mut jpc = lex.borrow_fs(None).jpc;
     concat_jump(lex, state, &mut jpc, list)?;
     lex.borrow_mut_fs(None).jpc = jpc;
@@ -459,20 +515,20 @@ fn code_label<T>(
     b: i32,
     jump: i32,
 ) -> Result<i32, LuaError> {
-    get_label(lex); // those instructions may be jump targets
+    get_label(lex, state); // those instructions may be jump targets
     Ok(code_abc(lex, state, OpCode::LoadBool as u32, a as i32, b, jump)? as i32)
 }
 
 /// check whether list has any jump that do not produce a value
 /// (or produce an inverted value)
-fn need_value<T>(lex: &mut LexState<T>, list: i32) -> bool {
+fn need_value<T>(lex: &mut LexState<T>, state: &mut LuaState, list: i32) -> bool {
     let mut list = list;
     while list != NO_JUMP {
-        let i = get_jump_control(lex, list);
+        let i = get_jump_control(lex, state, list);
         if get_opcode(*i) != OpCode::TestSet {
             return true;
         }
-        list = get_jump(lex, list);
+        list = get_jump(lex, state, list);
     }
     false
 }
@@ -495,10 +551,10 @@ fn concat_jump<T>(
         *l1 = l2;
     } else {
         let mut list = *l1;
-        let mut next = get_jump(lex, list);
+        let mut next = get_jump(lex, state, list);
         while next != NO_JUMP {
             list = next;
-            next = get_jump(lex, list)
+            next = get_jump(lex, state, list)
         }
         fix_jump(lex, state, list, l2)?;
     }
@@ -536,12 +592,12 @@ fn discharge2reg<T>(
         ExpressionKind::NumberConstant => {
             let kid = lex
                 .borrow_mut_fs(None)
-                .number_constant(exp.nval as LuaNumber) as u32;
+                .number_constant(state, exp.nval as LuaNumber) as u32;
             code_abx(lex, state, OpCode::LoadK as u32, reg as i32, kid)?;
         }
         ExpressionKind::Relocable => {
             let pc = exp.info as usize;
-            set_arg_a(&mut lex.vfs[lex.fs].f.code[pc], reg);
+            set_arg_a(lex.borrow_mut_code(state, pc), reg);
         }
         ExpressionKind::NonRelocable => {
             if reg != exp.info as u32 {
@@ -572,7 +628,7 @@ pub(crate) fn set_list<T>(
         code_abc(lex, state, OpCode::SetList as u32, base, b, c)?;
     } else {
         code_abc(lex, state, OpCode::SetList as u32, base, b, 0)?;
-        code(lex, state, c as u32, lex.lastline)?;
+        code(lex, state, c as u32)?;
     }
     // free registers with list values
     lex.borrow_mut_fs(None).freereg = (base + 1) as usize;
@@ -588,7 +644,8 @@ pub(crate) fn nil<T>(
     {
         let (pc, last_target, nactvar) = {
             let fs = lex.borrow_fs(None);
-            (fs.next_pc(), fs.last_target, fs.nactvar)
+            let pc = lex.next_pc(state) as i32;
+            (pc, fs.last_target, fs.nactvar)
         };
         if pc > last_target {
             //  no jumps to current position?
@@ -598,7 +655,7 @@ pub(crate) fn nil<T>(
                     return Ok(());
                 }
             } else {
-                let previous = lex.borrow_mut_code(pc as usize - 1);
+                let previous = lex.borrow_mut_code(state, pc as usize - 1);
                 if get_opcode(*previous) == OpCode::LoadNil {
                     let pfrom = get_arg_a(*previous);
                     let pto = get_arg_b(*previous);
@@ -657,13 +714,13 @@ pub(crate) fn check_stack<T>(
     state: &mut LuaState,
     count: usize,
 ) -> Result<(), LuaError> {
-    let fs = lex.borrow_mut_fs(None);
-    let new_stack = fs.freereg + count;
-    if new_stack > fs.f.maxstacksize {
+    let proto = lex.borrow_mut_proto(state, None);
+    let new_stack = lex.borrow_fs(None).freereg + count;
+    if new_stack > proto.maxstacksize {
         if new_stack > MAX_LUA_STACK {
             return lex.syntax_error(state, "function or expression too complex");
         }
-        fs.f.maxstacksize = new_stack;
+        proto.maxstacksize = new_stack;
     }
     Ok(())
 }
@@ -682,10 +739,10 @@ fn free_reg<T>(lex: &mut LexState<T>, reg: u32) {
     }
 }
 
-pub(crate) fn fix_line<T>(lex: &mut LexState<T>, line: usize) {
-    let fs = lex.borrow_mut_fs(None);
-    let pc = fs.next_pc() as usize;
-    fs.f.lineinfo[pc - 1] = line;
+pub(crate) fn fix_line<T>(lex: &mut LexState<T>, state: &mut LuaState, line: usize) {
+    let proto = lex.borrow_mut_proto(state, None);
+    let pc = proto.next_pc() as usize;
+    proto.lineinfo[pc - 1] = line;
 }
 
 pub(crate) fn prefix<T>(
@@ -693,23 +750,24 @@ pub(crate) fn prefix<T>(
     state: &mut LuaState,
     op: UnaryOp,
     e: &mut ExpressionDesc,
+    line: usize,
 ) -> Result<(), LuaError> {
     let mut e2 = ExpressionDesc::default();
     e2.init(ExpressionKind::NumberConstant, 0);
     match op {
         UnaryOp::Minus => {
-            if ! is_numeral(e) {
+            if !is_numeral(e) {
                 // cannot operate on non-numeric constants
                 exp2anyreg(lex, state, e)?;
             }
-            code_arith(lex, state, OpCode::UnaryMinus, e, &mut e2)?;
+            code_arith(lex, state, OpCode::UnaryMinus, e, &mut e2, line)?;
         }
         UnaryOp::Not => {
             code_not(lex, state, e)?;
         }
         UnaryOp::Len => {
             exp2anyreg(lex, state, e)?; // cannot operate on constants
-            code_arith(lex, state, OpCode::Len, e, &mut e2)?;
+            code_arith(lex, state, OpCode::Len, e, &mut e2, line)?;
         }
     }
     Ok(())
@@ -733,7 +791,7 @@ fn code_not<T>(
             exp.k = ExpressionKind::False;
         }
         ExpressionKind::Jump => {
-            invert_jump(lex, exp);
+            invert_jump(lex, state, exp);
         }
         ExpressionKind::Relocable | ExpressionKind::NonRelocable => {
             discharge2any_reg(lex, state, exp)?;
@@ -756,12 +814,17 @@ pub(crate) fn infix<T>(
         BinaryOp::And => go_if_true(lex, state, exp),
         BinaryOp::Or => go_if_false(lex, state, exp),
         BinaryOp::Concat => exp2nextreg(lex, state, exp),
-        BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod | BinaryOp::Pow => {
+        BinaryOp::Add
+        | BinaryOp::Sub
+        | BinaryOp::Mul
+        | BinaryOp::Div
+        | BinaryOp::Mod
+        | BinaryOp::Pow => {
             if !exp.is_numeral() {
                 exp2rk(lex, state, exp)?;
             }
             Ok(())
-        },
+        }
         _ => {
             exp2rk(lex, state, exp)?;
             Ok(())
@@ -769,7 +832,7 @@ pub(crate) fn infix<T>(
     }
 }
 
-fn go_if_false<T>(
+pub(crate) fn go_if_false<T>(
     lex: &mut LexState<T>,
     state: &mut LuaState,
     exp: &mut ExpressionDesc,
@@ -801,7 +864,7 @@ pub(crate) fn go_if_true<T>(
             NO_JUMP
         }
         ExpressionKind::Jump => {
-            invert_jump(lex, exp);
+            invert_jump(lex, state, exp);
             exp.info
         }
         _ => jump_on_cond(lex, state, exp, 0)?,
@@ -819,12 +882,12 @@ fn jump_on_cond<T>(
     cond: i32,
 ) -> Result<i32, LuaError> {
     {
-        let fs = lex.borrow_mut_fs(None);
+        let proto = lex.borrow_mut_proto(state, None);
         if exp.k == ExpressionKind::Relocable {
-            let ie = fs.f.code[exp.info as usize];
+            let ie = proto.code[exp.info as usize];
             if get_opcode(ie) == OpCode::Not {
                 // remove previous OP_NOT
-                fs.f.code.pop();
+                proto.code.pop();
                 return cond_jump(
                     lex,
                     state,
@@ -873,19 +936,20 @@ pub(crate) fn op_self<T>(
     key: &mut ExpressionDesc,
 ) -> Result<(), LuaError> {
     exp2anyreg(lex, state, e)?;
+    let ereg = e.info;
     free_exp(lex, e);
     let func = lex.borrow_fs(None).freereg as i32;
-    reserve_regs(lex, state, 2)?;
-    let c = exp2rk(lex, state, key)? as i32;
-    code_abc(lex, state, OpCode::OpSelf as u32, func, e.info, c)?;
-    free_exp(lex, key);
     e.info = func;
     e.k = ExpressionKind::NonRelocable;
+    reserve_regs(lex, state, 2)?;
+    let c = exp2rk(lex, state, key)? as i32;
+    code_abc(lex, state, OpCode::OpSelf as u32, func, ereg, c)?;
+    free_exp(lex, key);
     Ok(())
 }
 
-fn invert_jump<T>(lex: &mut LexState<T>, exp: &mut ExpressionDesc) {
-    let pcref = get_jump_control(lex, exp.info);
+fn invert_jump<T>(lex: &mut LexState<T>, state: &mut LuaState, exp: &mut ExpressionDesc) {
+    let pcref = get_jump_control(lex, state, exp.info);
     set_arg_a(pcref, if get_arg_a(*pcref) == 0 { 1 } else { 0 });
 }
 
@@ -895,6 +959,7 @@ pub(crate) fn postfix<T>(
     op: BinaryOp,
     exp1: &mut ExpressionDesc,
     exp2: &mut ExpressionDesc,
+    line: usize,
 ) -> Result<(), LuaError> {
     match op {
         BinaryOp::And => {
@@ -911,24 +976,27 @@ pub(crate) fn postfix<T>(
         }
         BinaryOp::Concat => {
             exp2val(lex, state, exp2)?;
-            let i2 = lex.get_code(exp2.info as usize);
+            let i2 = lex.get_code(state, exp2.info as usize);
             if exp2.k == ExpressionKind::Relocable && get_opcode(i2) == OpCode::Concat {
                 debug_assert!(exp1.info as u32 == get_arg_b(i2) - 1);
                 free_exp(lex, exp1);
-                set_arg_b(lex.borrow_mut_code(exp2.info as usize), exp1.info as u32);
+                set_arg_b(
+                    lex.borrow_mut_code(state, exp2.info as usize),
+                    exp1.info as u32,
+                );
                 exp1.k = ExpressionKind::Relocable;
                 exp1.info = exp2.info;
             } else {
                 exp2nextreg(lex, state, exp2)?; // operand must be on the 'stack'
-                code_arith(lex, state, OpCode::Concat, exp1, exp2)?;
+                code_arith(lex, state, OpCode::Concat, exp1, exp2, line)?;
             }
         }
-        BinaryOp::Add => code_arith(lex, state, OpCode::Add, exp1, exp2)?,
-        BinaryOp::Sub => code_arith(lex, state, OpCode::Sub, exp1, exp2)?,
-        BinaryOp::Mul => code_arith(lex, state, OpCode::Mul, exp1, exp2)?,
-        BinaryOp::Div => code_arith(lex, state, OpCode::Div, exp1, exp2)?,
-        BinaryOp::Mod => code_arith(lex, state, OpCode::Mod, exp1, exp2)?,
-        BinaryOp::Pow => code_arith(lex, state, OpCode::Pow, exp1, exp2)?,
+        BinaryOp::Add => code_arith(lex, state, OpCode::Add, exp1, exp2, line)?,
+        BinaryOp::Sub => code_arith(lex, state, OpCode::Sub, exp1, exp2, line)?,
+        BinaryOp::Mul => code_arith(lex, state, OpCode::Mul, exp1, exp2, line)?,
+        BinaryOp::Div => code_arith(lex, state, OpCode::Div, exp1, exp2, line)?,
+        BinaryOp::Mod => code_arith(lex, state, OpCode::Mod, exp1, exp2, line)?,
+        BinaryOp::Pow => code_arith(lex, state, OpCode::Pow, exp1, exp2, line)?,
         BinaryOp::Eq => code_comp(lex, state, OpCode::Eq, 1, exp1, exp2)?,
         BinaryOp::Ne => code_comp(lex, state, OpCode::Eq, 0, exp1, exp2)?,
         BinaryOp::Lt => code_comp(lex, state, OpCode::Lt, 1, exp1, exp2)?,
@@ -969,6 +1037,7 @@ fn code_arith<T>(
     op: OpCode,
     exp1: &mut ExpressionDesc,
     exp2: &mut ExpressionDesc,
+    line: usize,
 ) -> Result<(), LuaError> {
     if const_folding(op, exp1, exp2) {
         return Ok(());
@@ -981,13 +1050,14 @@ fn code_arith<T>(
     let o1 = exp2rk(lex, state, exp1)?;
     if o1 > o2 {
         free_exp(lex, exp1);
-        free_exp(lex, exp2);    
+        free_exp(lex, exp2);
     } else {
         free_exp(lex, exp2);
         free_exp(lex, exp1);
     }
     exp1.info = code_abc(lex, state, op as u32, 0, o1 as i32, o2 as i32)? as i32;
     exp1.k = ExpressionKind::Relocable;
+    fix_line(lex, state, line);
     Ok(())
 }
 
@@ -1043,7 +1113,7 @@ pub(crate) fn concat<T>(
     } else {
         let mut list = *l1;
         loop {
-            let next = get_jump(lex, list);
+            let next = get_jump(lex, state, list);
             if next != NO_JUMP {
                 list = next;
             } else {

@@ -3,7 +3,7 @@
 use crate::{
     api::LuaError,
     limits::Instruction,
-    object::{chunk_id, LocVar},
+    object::{chunk_id, LocVar, Proto},
     parser::FuncState,
     state::LuaState,
     zio::Zio,
@@ -14,6 +14,7 @@ const FIRST_RESERVED: isize = 257;
 /// maximum char value as \ddd in lua strings
 const CHAR_MAX: u32 = 255;
 
+// must match TOKEN_NAMES
 #[derive(Clone, Copy)]
 pub enum Reserved {
     // terminal symbols denoted by reserved words
@@ -26,6 +27,7 @@ pub enum Reserved {
     False,
     For,
     Function,
+    Goto,
     If,
     In,
     Local,
@@ -39,16 +41,17 @@ pub enum Reserved {
     Until,
     While,
     // other terminal symbols
-    Concat,
-    Dots,
-    Eq,
-    Ge,
-    Le,
-    Ne,
+    Concat,  // '..'
+    Dots,    // '...'
+    Eq,      // '=='
+    Ge,      // '>='
+    Le,      // '<='
+    Ne,      // '~='
+    DbColon, // '::'
+    Eos,
     Number,
     Name,
     String,
-    Eos,
 }
 
 impl TryFrom<u32> for Reserved {
@@ -92,10 +95,10 @@ impl TryFrom<u32> for Reserved {
     }
 }
 
-const TOKEN_NAMES: [&str; 31] = [
-    "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "if", "in", "local",
-    "nil", "not", "or", "repeat", "return", "then", "true", "until", "while", "..", "...", "==",
-    ">=", "<=", "~=", "<number>", "<name>", "<string>", "<eof>",
+const TOKEN_NAMES: [&str; 33] = [
+    "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "goto", "if", "in",
+    "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while", "..", "...",
+    "==", ">=", "<=", "~=", "::", "<eof>", "<number>", "<name>", "<string>",
 ];
 
 const NUM_RESERVED: isize = Reserved::While as isize - FIRST_RESERVED + 1;
@@ -154,6 +157,39 @@ impl Token {
     }
 }
 
+/// description of pending goto statements and label statements
+pub struct LabelDesc {
+    /// label identifier
+    pub name: String,
+    /// position in code
+    pub pc: usize,
+    /// line where it appeared
+    pub line: usize,
+    /// local level where it appears in current block
+    pub nactvar: usize,
+}
+impl LabelDesc {
+    pub(crate) fn new(name: &str, line: usize, pc: usize, nactvar: usize) -> Self {
+        Self {
+            name: name.to_owned(),
+            pc,
+            line,
+            nactvar,
+        }
+    }
+}
+
+#[derive(Default)]
+/// dynamic structures used by the parser
+pub struct DynData {
+    /// list of active local variables
+    pub actvar: Vec<usize>,
+    /// list of pending gotos
+    pub gt: Vec<LabelDesc>,
+    /// list of active labels
+    pub label: Vec<LabelDesc>,
+}
+
 pub struct LexState<T> {
     /// current character
     current: Option<char>,
@@ -165,20 +201,20 @@ pub struct LexState<T> {
     pub t: Option<Token>,
     /// look ahead token
     lookahead: Option<Token>,
-    //struct FuncState *fs;  /* `FuncState' is private to the parser */
-    //pub state: &mut LuaState,
     /// input stream
     z: Zio<T>,
     /// buffer for tokens
     buff: Vec<char>,
+    /// dynamic structures used by the parser
+    pub dyd: DynData,
     /// current source name
     pub source: String,
+    // environment variable name
+    pub envn: String,
     /// locale decimal point
     pub decpoint: String,
     /// func states
     pub vfs: Vec<FuncState>,
-    /// current func state
-    pub fs: usize,
 }
 
 impl<T> LexState<T> {
@@ -191,28 +227,96 @@ impl<T> LexState<T> {
             lookahead: None,
             z,
             buff: Vec::new(),
+            dyd: DynData::default(),
             source: source.to_owned(),
+            envn: "_ENV".to_owned(),
             decpoint: ".".to_owned(),
-            vfs: vec![FuncState::new(source)],
-            fs: 0,
+            vfs: vec![FuncState::new()],
         }
     }
     pub fn borrow_mut_fs(&mut self, idx: Option<usize>) -> &mut FuncState {
-        &mut self.vfs[idx.unwrap_or(self.fs)]
+        match idx {
+            Some(idx) => &mut self.vfs[idx],
+            None => self.vfs.last_mut().unwrap(),
+        }
     }
     pub fn borrow_fs(&self, idx: Option<usize>) -> &FuncState {
-        &self.vfs[idx.unwrap_or(self.fs)]
+        match idx {
+            Some(idx) => &self.vfs[idx],
+            None => self.vfs.last().unwrap(),
+        }
     }
-    pub fn borrow_mut_code(&mut self, pc: usize) -> &mut Instruction {
-        &mut self.vfs[self.fs].f.code[pc]
+    pub fn next_pc(&self, state: &mut LuaState) -> usize {
+        self.borrow_proto(state, None).next_pc() as usize
     }
-    pub fn borrow_mut_local_var(&mut self, id: usize) -> &mut LocVar {
-        let fs = self.borrow_mut_fs(None);
-        &mut fs.f.locvars[fs.actvar[id]]
+    pub(crate) fn borrow_mut_proto<'a>(
+        &self,
+        state: &'a mut LuaState,
+        fsid: Option<usize>,
+    ) -> &'a mut Proto {
+        let id = self.borrow_fs(fsid).f;
+        &mut state.protos[id]
     }
-    pub fn get_code(&self, pc: usize) -> Instruction {
-        self.vfs[self.fs].f.code[pc]
+    pub(crate) fn borrow_proto<'a>(
+        &self,
+        state: &'a mut LuaState,
+        fsid: Option<usize>,
+    ) -> &'a Proto {
+        let id = self.borrow_fs(fsid).f;
+        &state.protos[id]
     }
+    pub fn borrow_mut_code<'a>(
+        &mut self,
+        state: &'a mut LuaState,
+        pc: usize,
+    ) -> &'a mut Instruction {
+        let protoid = self.borrow_fs(None).f;
+        state.borrow_mut_instruction(protoid, pc)
+    }
+    pub fn get_code(&self, state: &LuaState, pc: usize) -> Instruction {
+        let protoid = self.borrow_fs(None).f;
+        state.get_instruction(protoid, pc)
+    }
+    pub(crate) fn search_var(
+        &self,
+        state: &mut LuaState,
+        fs_id: Option<usize>,
+        name: &str,
+    ) -> Option<usize> {
+        let nactvar = self.borrow_fs(fs_id).nactvar;
+        if nactvar > 0 {
+            (0..nactvar)
+                .rev()
+                .find(|&i| name == self.borrow_loc_var(state, fs_id, i).name)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn borrow_loc_var<'a>(
+        &self,
+        state: &'a mut LuaState,
+        fs_id: Option<usize>,
+        i: usize,
+    ) -> &'a LocVar {
+        let first_local = self.borrow_fs(fs_id).first_local;
+        let idx = self.dyd.actvar[first_local + i];
+        let proto = self.borrow_proto(state, fs_id);
+        debug_assert!(idx < proto.locvars.len());
+        &proto.locvars[idx]
+    }
+    pub(crate) fn borrow_mut_local_var<'a>(
+        &mut self,
+        state: &'a mut LuaState,
+        id: usize,
+    ) -> &'a mut LocVar {
+        let first_local = self.borrow_fs(None).first_local;
+        let idx = self.dyd.actvar[first_local + id];
+        let proto = self.borrow_mut_proto(state, None);
+        debug_assert!(idx < proto.locvars.len());
+        &mut proto.locvars[idx]
+    }
+
     /// read next character in the stream
     pub fn next_char(&mut self, state: &mut LuaState) {
         self.current = self.z.getc(state);
@@ -674,10 +778,8 @@ impl<T> LexState<T> {
         let first = self.current.unwrap();
         self.save_and_next(state);
         let mut expo = "Ee";
-        let mut hex = false;
         if first == '0' && self.check_next(state, "Xx") {
             // hexadecimal ?
-            hex = true;
             expo = "Pp";
         }
         loop {
@@ -722,13 +824,13 @@ impl<T> LexState<T> {
         what: &str,
     ) -> Result<(), LuaError> {
         let msg = {
-            let fs = self.borrow_fs(None);
-            if fs.f.linedefined == 0 {
+            let proto = self.borrow_proto(state, None);
+            if proto.linedefined == 0 {
                 format!("main function has more than {} {}", limit, what)
             } else {
                 format!(
                     "function at line {} has more than {} {}",
-                    fs.f.linedefined, limit, what
+                    proto.linedefined, limit, what
                 )
             }
         };
@@ -739,6 +841,26 @@ impl<T> LexState<T> {
         debug_assert!(self.lookahead.is_none());
         self.lookahead = self.lex(state)?;
         Ok(())
+    }
+
+    pub(crate) fn new_label_entry(&self, label: String, line: usize, pc: i32) -> LabelDesc {
+        let nactvar = self.borrow_fs(None).nactvar;
+        LabelDesc {
+            name: label,
+            pc: pc as usize,
+            line,
+            nactvar,
+        }
+    }
+
+    /// semantic error
+    pub(crate) fn semantic_error(
+        &mut self,
+        state: &mut LuaState,
+        msg: &str,
+    ) -> Result<(), LuaError> {
+        self.t = None; // remove 'near to' from final message
+        self.syntax_error(state, msg)
     }
 }
 
@@ -762,7 +884,7 @@ fn strx2number(svalue: &str) -> Option<f64> {
     let mut i = 0;
     let mut it = 0;
     let chars: Vec<char> = svalue.chars().collect();
-    let len=chars.len();
+    let len = chars.len();
     let neg = chars[0] == '-';
     if neg || chars[0] == '+' {
         it += 1;
@@ -796,11 +918,7 @@ fn strx2number(svalue: &str) -> Option<f64> {
         // exponent part?
         let mut exp1 = 0.0;
         it += 1; // skip 'p'
-        let neg1 = if it < len {
-            chars[it] == '-'
-        } else {
-            false
-        };
+        let neg1 = if it < len { chars[it] == '-' } else { false };
         if neg1 || (it < len && chars[it] == '+') {
             it += 1;
         }
