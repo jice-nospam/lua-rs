@@ -16,7 +16,7 @@
             "externalConsole": false
         },
         {
-            "name": "bintree ex",
+            "name": "binary trees",
             "type": "cppvsdbg",
             "request": "launch",
             "program": "${workspaceFolder}/target/debug/examples/binary_trees.exe",
@@ -26,5 +26,16 @@
             "environment": [],
             "externalConsole": false
         },
+        {
+            "name": "nbody",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/target/debug/examples/nbody.exe",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false
+        },        
     ]
 }

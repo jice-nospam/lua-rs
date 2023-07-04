@@ -23,7 +23,7 @@ debug_logs = ["lualib/debug_logs"]
 
 [dev-dependencies]
 criterion="*"
-rlua={version="*",default-features = false, features=["builtin-lua51"]}
+rlua={version="*",default-features = false, features=["builtin-lua53"]}
 
 [profile.bench]
 debug = false

@@ -596,4 +596,27 @@ mod tests {
         api::get_global(&mut state, "z");
         assert_eq!(state.stack.last().unwrap(), &TValue::Number(34.0));
     }
+    #[test]
+    fn goto() {
+        let mut state = luaL::newstate();
+        luaL::open_libs(&mut state).unwrap();
+        luaL::dostring(
+            &mut state,
+            "
+        t={1,3,5,7,9}
+        z=0
+        for _,v in ipairs(t) do
+            z=z+v
+            if v == 5 then
+                goto exit
+            end
+        end
+        ::exit::
+        ",
+        )
+        .unwrap();
+
+        api::get_global(&mut state, "z");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Number(9.0));
+    }
 }

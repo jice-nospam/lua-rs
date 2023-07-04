@@ -86,10 +86,12 @@ cargo test -p lualib
 Be sure to set the rlua version corresponding to the one you're testing in `Cargo.toml` :
 
 ```toml
-rlua={version="*",default-features = false, features=["builtin-lua51"]}
+rlua={version="*",default-features = false, features=["builtin-lua53"]}
 ```
 
-`cargo bench`
+(note that there is no `builtin-lua52` feature in rlua)
+
+`cargo bench > /dev/null`
 
 ## benchmark results
 

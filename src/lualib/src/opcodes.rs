@@ -58,6 +58,7 @@ pub const MAXARG_SBX: i32 = (MAXARG_BX >> 1) as i32;
 pub const NO_REG: u32 = MAXARG_A as u32;
 pub const NO_JUMP: i32 = -1;
 
+#[cfg(feature = "debug_logs")]
 pub(crate) const OPCODE_NAME: [&str; 40] = [
     "move", "loadk", "loadkx", "loadbool", "loadnil", "getupval", "gettabup", "gettable",
     "settabup", "setupval", "settable", "newtable", "opself", "add", "sub", "mul", "div", "mod",

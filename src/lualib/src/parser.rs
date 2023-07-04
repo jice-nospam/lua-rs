@@ -85,7 +85,7 @@ pub struct UpValDesc {
 /// nodes for block list (list of active blocks)
 pub(crate) struct BlockCnt {
     /// index of first label in this block
-    first_label: usize,
+    pub first_label: usize,
     /// index of first pending goto in this block
     first_goto: usize,
     /// # active locals outside the breakable structure
@@ -128,8 +128,6 @@ pub struct FuncState {
     pub f: ProtoId,
     /// table to find (and reuse) constants in `f.k'
     pub h: TableRef,
-    /// enclosing function
-    //prev: Option<usize>,
     /// chain of current blocks
     pub(crate) bl: Vec<BlockCnt>,
     /// `pc' of last `jump target'
@@ -169,6 +167,10 @@ impl FuncState {
                 break;
             }
         }
+    }
+
+    pub(crate) fn borrow_block(&self) -> &BlockCnt {
+        self.bl.last().unwrap()
     }
 
     pub(crate) fn add_constant(
@@ -375,12 +377,24 @@ fn statement<T>(lex: &mut LexState<T>, state: &mut LuaState) -> Result<(), LuaEr
 
 /// label -> '::' NAME '::'
 fn label_stat<T>(
-    _lex: &mut LexState<T>,
-    _state: &mut LuaState,
-    _name: String,
-    _line: usize,
+    lex: &mut LexState<T>,
+    state: &mut LuaState,
+    label: String,
+    line: usize,
 ) -> Result<(), LuaError> {
-    todo!()
+    lex.check_repeated(state, &label)?; // check for repeated labels
+    check_next(lex, state, Reserved::DbColon as u32)?; // skip double colon
+    let pc = lex.next_pc(state) as i32;
+    let l = lex.dyd.label.len();
+    lex.dyd.label.push(lex.new_label_entry(label, line, pc));
+    skip_noop_stat(lex, state)?; // skip other no-op statements
+    if block_follow(lex, false) {
+        // label is last no-op statement in the block?
+        // assume that locals are already out of scope
+        lex.dyd.label[l].nactvar = lex.borrow_fs(None).nactvar;
+    }
+    find_gotos(lex, state, l)?;
+    Ok(())
 }
 
 #[derive(Default, PartialEq, Clone, Copy)]

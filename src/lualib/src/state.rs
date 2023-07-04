@@ -263,7 +263,7 @@ impl LuaState {
     }
 
     pub(crate) fn adjust_results(&mut self, nresults: i32) {
-        if nresults == LUA_MULTRET && self.stack.len() >= self.base_ci[self.ci].top {
+        if nresults == LUA_MULTRET && self.stack.len() > self.base_ci[self.ci].top {
             self.base_ci[self.ci].top = self.stack.len();
         }
     }
@@ -402,7 +402,7 @@ impl LuaState {
         if index > 0 {
             // positive index in the stack
             let index = index as usize + func;
-            debug_assert!(index + func + 1 <= self.base_ci[self.ci].top);
+            debug_assert!(index < self.base_ci[self.ci].top);
             if index >= self.stack.len() {
                 return TValue::Nil;
             }

@@ -61,35 +61,38 @@ impl TryFrom<u32> for Reserved {
         match value {
             x if Reserved::And as u32 == x => Ok(Reserved::And),
             x if Reserved::Break as u32 == x => Ok(Reserved::Break),
-            x if Reserved::Concat as u32 == x => Ok(Reserved::Concat),
             x if Reserved::Do as u32 == x => Ok(Reserved::Do),
-            x if Reserved::Dots as u32 == x => Ok(Reserved::Dots),
             x if Reserved::Else as u32 == x => Ok(Reserved::Else),
             x if Reserved::ElseIf as u32 == x => Ok(Reserved::ElseIf),
             x if Reserved::End as u32 == x => Ok(Reserved::End),
-            x if Reserved::Eos as u32 == x => Ok(Reserved::Eos),
-            x if Reserved::Eq as u32 == x => Ok(Reserved::Eq),
             x if Reserved::False as u32 == x => Ok(Reserved::False),
             x if Reserved::For as u32 == x => Ok(Reserved::For),
             x if Reserved::Function as u32 == x => Ok(Reserved::Function),
-            x if Reserved::Ge as u32 == x => Ok(Reserved::Ge),
+            x if Reserved::Goto as u32 == x => Ok(Reserved::Goto),
             x if Reserved::If as u32 == x => Ok(Reserved::If),
             x if Reserved::In as u32 == x => Ok(Reserved::In),
-            x if Reserved::Le as u32 == x => Ok(Reserved::Le),
             x if Reserved::Local as u32 == x => Ok(Reserved::Local),
-            x if Reserved::Name as u32 == x => Ok(Reserved::Name),
-            x if Reserved::Ne as u32 == x => Ok(Reserved::Ne),
             x if Reserved::Nil as u32 == x => Ok(Reserved::Nil),
             x if Reserved::Not as u32 == x => Ok(Reserved::Not),
-            x if Reserved::Number as u32 == x => Ok(Reserved::Number),
             x if Reserved::Or as u32 == x => Ok(Reserved::Or),
             x if Reserved::Repeat as u32 == x => Ok(Reserved::Repeat),
             x if Reserved::Return as u32 == x => Ok(Reserved::Return),
-            x if Reserved::String as u32 == x => Ok(Reserved::String),
             x if Reserved::Then as u32 == x => Ok(Reserved::Then),
             x if Reserved::True as u32 == x => Ok(Reserved::True),
             x if Reserved::Until as u32 == x => Ok(Reserved::Until),
             x if Reserved::While as u32 == x => Ok(Reserved::While),
+            x if Reserved::Concat as u32 == x => Ok(Reserved::Concat),
+            x if Reserved::Dots as u32 == x => Ok(Reserved::Dots),
+            x if Reserved::Eq as u32 == x => Ok(Reserved::Eq),
+            x if Reserved::Ge as u32 == x => Ok(Reserved::Ge),
+            x if Reserved::Le as u32 == x => Ok(Reserved::Le),
+            x if Reserved::Ne as u32 == x => Ok(Reserved::Ne),
+            x if Reserved::DbColon as u32 == x => Ok(Reserved::DbColon),
+            x if Reserved::Eos as u32 == x => Ok(Reserved::Eos),
+            x if Reserved::Number as u32 == x => Ok(Reserved::Number),
+            x if Reserved::Name as u32 == x => Ok(Reserved::Name),
+            x if Reserved::String as u32 == x => Ok(Reserved::String),
+
             _ => Err(()),
         }
     }
@@ -430,6 +433,18 @@ impl<T> LexState<T> {
                         }
                         _ => {
                             return Ok(Some(Token::new('~')));
+                        }
+                    }
+                }
+                Some(':') => {
+                    self.next_char(state);
+                    match self.current {
+                        Some(':') => {
+                            self.next_char(state);
+                            return Ok(Some(Reserved::DbColon.into()));
+                        }
+                        _ => {
+                            return Ok(Some(Token::new(':')));
                         }
                     }
                 }
@@ -861,6 +876,25 @@ impl<T> LexState<T> {
     ) -> Result<(), LuaError> {
         self.t = None; // remove 'near to' from final message
         self.syntax_error(state, msg)
+    }
+
+    /// check for repeated labels on the same block
+    pub(crate) fn check_repeated(
+        &mut self,
+        state: &mut LuaState,
+        label: &str,
+    ) -> Result<(), LuaError> {
+        let first_label = self.borrow_fs(None).borrow_block().first_label;
+        for i in first_label..self.dyd.label.len() {
+            if label == self.dyd.label[i].name {
+                let msg = format!(
+                    "label '{}' already defined on line {}",
+                    label, self.dyd.label[i].line
+                );
+                return self.semantic_error(state, &msg);
+            }
+        }
+        Ok(())
     }
 }
 
