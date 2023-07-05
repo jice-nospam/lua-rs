@@ -7,7 +7,7 @@ The current goal is to reimplement each version one after another to have all th
 The core of the 5.1 version of the language is implemented in the [v5.1.x](https://github.com/jice-nospam/lua-rs/tree/v5.1.x) branch but api and auxlib are very incomplete.
 It has not been much tested beyond the unit tests and the benchmarks ([see benches/lua](benches/lua))
 
-Currently working on 5.2 to add goto support.
+The core of the 5.2 version of the language is implemented in the [v5.2.x](https://github.com/jice-nospam/lua-rs/tree/v5.2.x) branch with `goto` support. The bitwise operations library is not implemented as it's scrapped in 5.3.
 
 Next to be added : integers (5.3) and consts (5.4).
 

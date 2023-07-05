@@ -397,6 +397,10 @@ impl LuaState {
         }
     }
 
+    pub(crate) fn is_index_valid(&self, index: isize) -> bool {
+        let len = self.stack.len() as isize;
+        (index >= 0 && index < len) || (index < 0 && index >= -len) || index <= LUA_REGISTRYINDEX
+    }
     pub(crate) fn index2adr(&self, index: isize) -> TValue {
         let func = self.base_ci[self.ci].func;
         if index > 0 {

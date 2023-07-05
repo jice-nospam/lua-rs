@@ -4,7 +4,7 @@ use crate::{api, luaL, state::LuaState};
 
 use super::LibReg;
 
-const MATH_FUNCS: [LibReg; 28] = [
+const MATH_FUNCS: [LibReg; 27] = [
     LibReg {
         name: "abs",
         func: math_abs,
@@ -60,10 +60,6 @@ const MATH_FUNCS: [LibReg; 28] = [
     LibReg {
         name: "ldexp",
         func: math_ldexp,
-    },
-    LibReg {
-        name: "log10",
-        func: math_log10,
     },
     LibReg {
         name: "log",
@@ -190,14 +186,19 @@ pub fn math_ldexp(s: &mut LuaState) -> Result<i32, ()> {
     api::push_number(s, m * (2.0_f64).powi(e));
     Ok(1)
 }
-pub fn math_log10(s: &mut LuaState) -> Result<i32, ()> {
-    let value = luaL::check_number(s, 1).map_err(|_| ())?;
-    api::push_number(s, value.log10());
-    Ok(1)
-}
 pub fn math_log(s: &mut LuaState) -> Result<i32, ()> {
     let value = luaL::check_number(s, 1).map_err(|_| ())?;
-    api::push_number(s, value.ln());
+    let res = if api::is_none_or_nil(s, 2) {
+        value.ln()
+    } else {
+        let base = luaL::check_number(s, 2).map_err(|_| ())?;
+        if base == 10.0 {
+            value.log10()
+        } else {
+            value.log(base)
+        }
+    };
+    api::push_number(s, res);
     Ok(1)
 }
 pub fn math_max(s: &mut LuaState) -> Result<i32, ()> {

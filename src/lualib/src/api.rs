@@ -77,7 +77,7 @@ pub fn load<T>(
             if let Closure::Lua(lcl) = &mut *clref.borrow_mut() {
                 if lcl.upvalues.len() == 1 {
                     // does it have one upvalue?
-                    let gt=state.get_global_table();
+                    let gt = state.get_global_table();
                     lcl.upvalues[0].value = gt.clone();
                 }
             }
@@ -86,24 +86,24 @@ pub fn load<T>(
     Ok(0)
 }
 
-/// Returns the index of the top element in the stack. 
-/// Because indices start at 1, this result is equal to the number of 
-/// elements in the stack (and so 0 means an empty stack). 
+/// Returns the index of the top element in the stack.
+/// Because indices start at 1, this result is equal to the number of
+/// elements in the stack (and so 0 means an empty stack).
 pub fn get_top(s: &mut LuaState) -> usize {
     s.stack.len() - s.base_ci[s.ci].base
 }
 
-/// Pushes onto the stack the value of the global name. 
+/// Pushes onto the stack the value of the global name.
 pub fn get_global(s: &mut LuaState, name: &str) {
-    let gt=s.get_global_table();
-    let top=s.stack.len();
+    let gt = s.get_global_table();
+    let top = s.stack.len();
     s.stack.push(TValue::from(name));
-    LuaState::get_tablev2(&mut s.stack,&gt,&TValue::from(name),Some(top));
+    LuaState::get_tablev2(&mut s.stack, &gt, &TValue::from(name), Some(top));
 }
 
-/// Pops a value from the stack and sets it as the new value of global name. 
+/// Pops a value from the stack and sets it as the new value of global name.
 pub fn set_global(state: &mut LuaState, name: &str) {
-    let gt=state.get_global_table();
+    let gt = state.get_global_table();
     let key = TValue::from(name);
     let value = state.stack.pop().unwrap();
     LuaState::set_tablev(state, &gt, key, value);
@@ -116,12 +116,12 @@ pub fn get_field(s: &mut LuaState, index: isize, name: &str) {
     LuaState::get_tablev2(&mut s.stack, &t, &key, None);
 }
 
-/// Pushes a copy of the element at the given index onto the stack. 
+/// Pushes a copy of the element at the given index onto the stack.
 pub fn push_value(s: &mut LuaState, index: isize) {
     s.push_value(index);
 }
 
-/// Pushes the string `value` onto the stack. 
+/// Pushes the string `value` onto the stack.
 pub fn push_literal(s: &mut LuaState, value: &str) {
     s.push_literal(value);
 }
@@ -201,7 +201,6 @@ pub fn is_function(s: &mut LuaState, index: isize) -> bool {
 pub fn is_table(s: &mut LuaState, index: isize) -> bool {
     s.index2adr(index).is_table()
 }
-
 
 pub fn to_pointer(s: &mut LuaState, index: isize) -> *const TValue {
     let index = if index < 0 {
@@ -320,30 +319,28 @@ pub fn push_global_table(state: &mut LuaState) {
 }
 
 pub fn raw_get(s: &mut LuaState, idx: i32) {
-    let t=s.index2adr(idx as isize);
+    let t = s.index2adr(idx as isize);
     debug_assert!(t.is_table());
     if let TValue::Table(tref) = &t {
-        let mut t=tref.borrow_mut();
-        let key=s.stack.pop().unwrap();
+        let mut t = tref.borrow_mut();
+        let key = s.stack.pop().unwrap();
         let value = t.get(&key).cloned().unwrap_or(TValue::Nil);
         // replace key with result
-        let len=s.stack.len();
-        s.stack[len-1] = value;
+        let len = s.stack.len();
+        s.stack[len - 1] = value;
     }
 }
 
 pub fn get_meta_table(s: &mut LuaState, objindex: i32) -> bool {
-    let obj=s.index2adr(objindex as isize);
+    let obj = s.index2adr(objindex as isize);
     let mt = match obj {
-        TValue::Table(tref) => {
-            tref.borrow().metatable.clone()
-        }
+        TValue::Table(tref) => tref.borrow().metatable.clone(),
         TValue::UserData(_) => {
             todo!()
         }
         _ => {
             // get global type metatable
-            let objtype=obj.get_type_name();
+            let objtype = obj.get_type_name();
             s.g.mt.get(objtype).cloned().flatten()
         }
     };
@@ -356,16 +353,16 @@ pub fn get_meta_table(s: &mut LuaState, objindex: i32) -> bool {
     }
 }
 
-/// Removes the element at the given valid index, 
-/// shifting down the elements above this index to fill the gap. 
-/// This function cannot be called with a pseudo-index, 
-/// because a pseudo-index is not an actual stack position. 
+/// Removes the element at the given valid index,
+/// shifting down the elements above this index to fill the gap.
+/// This function cannot be called with a pseudo-index,
+/// because a pseudo-index is not an actual stack position.
 pub fn remove(s: &mut LuaState, idx: isize) {
     debug_assert!(idx < s.stack.len() as isize);
     debug_assert!(idx >= -(s.stack.len() as isize));
     // convert to absolute index
     let idx = if idx < 0 {
-        s.stack.len() as isize +idx
+        s.stack.len() as isize + idx
     } else {
         idx
     };
@@ -377,12 +374,16 @@ pub fn new_table(s: &mut LuaState) {
     create_table(s);
 }
 
-/// Converts the acceptable index idx into an absolute index 
-/// (that is, one that does not depend on the stack top). 
+/// Converts the acceptable index idx into an absolute index
+/// (that is, one that does not depend on the stack top).
 pub fn abs_index(s: &mut LuaState, idx: isize) -> isize {
     if idx > 0 || idx <= LUA_REGISTRYINDEX {
-        idx 
+        idx
     } else {
         s.stack.len() as isize + idx - s.base_ci[s.ci].func as isize
     }
+}
+
+pub fn is_none_or_nil(s: &mut LuaState, index: i32) -> bool {
+    !s.is_index_valid(index as isize) || s.index2adr(index as isize).is_nil()
 }
