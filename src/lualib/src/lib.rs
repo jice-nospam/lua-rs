@@ -31,7 +31,7 @@ pub(crate) use vm as luaV;
 pub(crate) use zio as luaZ;
 pub use {object::TValue, state::LuaState};
 
-pub type LuaNumber = f64;
+pub type LuaFloat = f64;
 pub type LuaInteger = i64;
 
 pub type LuaRustFunction = fn(&mut LuaState) -> Result<i32, ()>;
@@ -47,7 +47,7 @@ pub const LUA_RIDX_MAINTHREAD: usize = 1;
 pub const LUA_RIDX_GLOBALS: usize = 2;
 // pseudo-indices
 pub const LUA_REGISTRYINDEX: isize = -1000000 - 1000;
-pub const LUA_VERSION: &str = "Lua 5.2.4";
+pub const LUA_VERSION: &str = "Lua 5.3.6";
 
 pub type Reader<T> = fn(&mut LuaState, &T, &mut Vec<char>) -> Result<(), ()>;
 
@@ -63,10 +63,46 @@ macro_rules! debug_print {
 mod tests {
     use crate::{api, luaL, object::TValue, LuaError};
     #[test]
-    fn hello_world() {
+    fn bitor_const() {
         let mut state = luaL::newstate();
-        luaL::open_libs(&mut state).unwrap();
-        luaL::dostring(&mut state, "print('hello world from lua-rs!')").unwrap();
+        luaL::dostring(&mut state, "z=5|6").unwrap();
+        api::get_global(&mut state, "z");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(7));
+    }
+    #[test]
+    fn bitor() {
+        let mut state = luaL::newstate();
+        luaL::dostring(&mut state, "function bo(x,y) return x|y end z=bo(5,6)").unwrap();
+        api::get_global(&mut state, "z");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(7));
+    }
+    #[test]
+    fn bitxor_const() {
+        let mut state = luaL::newstate();
+        luaL::dostring(&mut state, "z=5~7").unwrap();
+        api::get_global(&mut state, "z");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(2));
+    }
+    #[test]
+    fn bitxor() {
+        let mut state = luaL::newstate();
+        luaL::dostring(&mut state, "function bo(x,y) return x~y end z=bo(5,7)").unwrap();
+        api::get_global(&mut state, "z");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(2));
+    }
+    #[test]
+    fn bitnot_const() {
+        let mut state = luaL::newstate();
+        luaL::dostring(&mut state, "z=~7").unwrap();
+        api::get_global(&mut state, "z");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(-8));
+    }
+    #[test]
+    fn bitnot() {
+        let mut state = luaL::newstate();
+        luaL::dostring(&mut state, "function bo(x) return ~x end z=bo(7)").unwrap();
+        api::get_global(&mut state, "z");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(-8));
     }
     #[test]
     fn global_number() {
@@ -74,7 +110,7 @@ mod tests {
         luaL::dostring(&mut state, "a=4").unwrap();
 
         api::get_global(&mut state, "a");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(4.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(4));
     }
     #[test]
     fn global_string() {
@@ -100,7 +136,7 @@ mod tests {
         luaL::dostring(&mut state, "z=3+4").unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(7.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(7));
     }
     #[test]
     fn add_var() {
@@ -108,7 +144,7 @@ mod tests {
         luaL::dostring(&mut state, "a=3;b=4;z=a+b").unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(7.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(7));
     }
     #[test]
     fn func() {
@@ -116,7 +152,7 @@ mod tests {
         luaL::dostring(&mut state, "function a() return 7; end z=a()").unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(7.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(7));
     }
     #[test]
     fn func_add() {
@@ -124,7 +160,7 @@ mod tests {
         luaL::dostring(&mut state, "function a(x,y) return x+y; end z=a(3,4)").unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(7.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(7));
     }
     #[test]
     fn for_num() {
@@ -132,7 +168,7 @@ mod tests {
         luaL::dostring(&mut state, "a=0 for i=1,10 do a=a+i end").unwrap();
 
         api::get_global(&mut state, "a");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(55.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(55));
     }
     #[test]
     fn for_with_step() {
@@ -140,7 +176,7 @@ mod tests {
         luaL::dostring(&mut state, "a=0 for i=1,10,2 do a=a+i end").unwrap();
 
         api::get_global(&mut state, "a");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(25.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(25));
     }
     #[test]
     fn for_in() {
@@ -162,7 +198,7 @@ mod tests {
         .unwrap();
 
         api::get_global(&mut state, "a");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(17.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(17));
     }
     #[test]
     fn nested_for() {
@@ -174,7 +210,7 @@ mod tests {
         .unwrap();
 
         api::get_global(&mut state, "a");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(3025.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(3025));
     }
     #[test]
     fn func_local() {
@@ -190,31 +226,47 @@ mod tests {
         .unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(0.5));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Float(0.5));
     }
     #[test]
     fn table() {
         let mut state = luaL::newstate();
         luaL::dostring(
             &mut state,
-            "local N=10\nlocal u={}\nfor i=1,N do u[i]=i end\nz=0\nfor i=1,N do z=z+u[i] end",
+            "
+            local N=10
+            local u={}
+            for i=1,N do 
+                u[i]=i 
+            end
+            z=0
+            for i=1,N do 
+                z=z+u[i] 
+            end",
         )
         .unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(55.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(55));
     }
     #[test]
     fn func_call() {
         let mut state = luaL::newstate();
         luaL::dostring(
             &mut state,
-            "local function A(x) return x+1 end\nlocal function B(x) return A(x)+2 end\nz=B(0)",
+            "
+            local function A(x) 
+                return x+1 
+            end
+            local function B(x) 
+                return A(x)+2 
+            end
+            z=B(0)",
         )
         .unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(3.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(3));
     }
     #[test]
     fn method() {
@@ -230,7 +282,7 @@ mod tests {
         .unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(4.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(4));
     }
     #[test]
     fn unknown_lib() {
@@ -257,7 +309,7 @@ mod tests {
         luaL::dostring(&mut state, "local a={x=-1,y=-2} z=a.x+a.y").unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(-3.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(-3));
     }
     #[test]
     fn set_list() {
@@ -265,7 +317,7 @@ mod tests {
         luaL::dostring(&mut state, "local q={2,4,6,8,10} z=q[3]").unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(6.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(6));
     }
     #[test]
     fn array_len() {
@@ -273,7 +325,7 @@ mod tests {
         luaL::dostring(&mut state, "local q={2,4,6,8,10} z=#q").unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(5.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(5));
     }
     #[test]
     fn lt() {
@@ -285,7 +337,7 @@ mod tests {
         .unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(4.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(4));
     }
     #[test]
     fn gt() {
@@ -297,7 +349,7 @@ mod tests {
         .unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(4.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(4));
     }
     #[test]
     fn eq() {
@@ -309,7 +361,7 @@ mod tests {
         .unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(4.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(4));
     }
     #[test]
     fn ne() {
@@ -321,7 +373,7 @@ mod tests {
         .unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(4.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(4));
     }
     #[test]
     fn le() {
@@ -333,7 +385,7 @@ mod tests {
         .unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(4.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(4));
     }
     #[test]
     fn ge() {
@@ -345,7 +397,7 @@ mod tests {
         .unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(4.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(4));
     }
     #[test]
     fn bool_cond() {
@@ -353,7 +405,7 @@ mod tests {
         luaL::dostring(&mut state, "z=2 if nil then z=z+1 end if 3 then z=z+2 end if false then z=z+4 end if {} then z=z+8 end").unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(12.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(12));
     }
 
     #[test]
@@ -373,9 +425,9 @@ mod tests {
         .unwrap();
 
         api::get_global(&mut state, "a");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(1.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(1));
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(2.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(2));
     }
     #[test]
     fn recursion() {
@@ -395,7 +447,7 @@ mod tests {
         .unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(8.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(8));
     }
     #[test]
     fn nested_loops() {
@@ -417,7 +469,7 @@ mod tests {
         .unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(216.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(216));
     }
     #[test]
     fn concat() {
@@ -450,7 +502,7 @@ mod tests {
         .unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(5040.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(5040));
     }
     #[test]
     fn vararg() {
@@ -468,7 +520,7 @@ mod tests {
         .unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(22.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(22));
     }
     #[test]
     fn vararg_ipair() {
@@ -490,7 +542,7 @@ mod tests {
         .unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(22.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(22));
     }
 
     #[test]
@@ -509,7 +561,7 @@ mod tests {
         .unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(19.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(19));
     }
     #[test]
     fn repeat() {
@@ -527,7 +579,7 @@ mod tests {
         .unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(511.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(511));
     }
     #[test]
     fn while_do() {
@@ -545,7 +597,7 @@ mod tests {
         .unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(511.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(511));
     }
     #[test]
     fn coercion() {
@@ -560,7 +612,7 @@ mod tests {
         .unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(15.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Float(15.0));
     }
     #[test]
     fn expression() {
@@ -575,17 +627,17 @@ mod tests {
         .unwrap();
 
         api::get_global(&mut state, "a");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(2.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(2));
         api::get_global(&mut state, "b");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(1.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(1));
         api::get_global(&mut state, "c");
         assert_eq!(state.stack.last().unwrap(), &TValue::Nil);
         api::get_global(&mut state, "d");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(1.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(1));
         api::get_global(&mut state, "e");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(2.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(2));
         api::get_global(&mut state, "f");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(5.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(5));
     }
     #[test]
     fn numbers() {
@@ -594,7 +646,7 @@ mod tests {
         luaL::dostring(&mut state, "z=3 + 1E1 + 0xa + 0xB").unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(34.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(34));
     }
     #[test]
     fn goto() {
@@ -617,6 +669,6 @@ mod tests {
         .unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(9.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(9));
     }
 }

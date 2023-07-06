@@ -6,7 +6,7 @@ use crate::{
     luaD, luaG, luaV, luaZ,
     object::{Closure, TValue},
     state::{LuaState, PanicFunction},
-    LuaInteger, LuaNumber, LuaRustFunction, Reader, LUA_REGISTRYINDEX, LUA_RIDX_GLOBALS,
+    LuaFloat, LuaInteger, LuaRustFunction, Reader, LUA_REGISTRYINDEX, LUA_RIDX_GLOBALS,
 };
 
 #[derive(Debug, PartialEq)]
@@ -29,7 +29,8 @@ pub fn to_string(state: &mut LuaState, idx: isize) -> Option<String> {
     // TODO convert in stack
     match state.index2adr(idx) {
         TValue::String(s) => Some(s.as_ref().clone()),
-        TValue::Number(n) => Some(format!("{}", n)),
+        TValue::Float(n) => Some(format!("{}", n)),
+        TValue::Integer(n) => Some(format!("{}", n)),
         _ => None,
     }
 }
@@ -40,7 +41,7 @@ struct CallData {
 }
 
 fn f_call(state: &mut LuaState, c: &CallData) -> Result<i32, LuaError> {
-    state.dcall(c.func as usize, c.nresults, false)?;
+    state.dcall_no_yield(c.func as usize, c.nresults)?;
     Ok(0)
 }
 
@@ -75,22 +76,23 @@ pub fn load<T>(
     if res.is_ok() {
         if let TValue::Function(clref) = state.stack.last().unwrap() {
             if let Closure::Lua(lcl) = &mut *clref.borrow_mut() {
-                if lcl.upvalues.len() == 1 {
+                if lcl.upvalues.len() >= 1 {
                     // does it have one upvalue?
                     let gt = state.get_global_table();
+                    // set global table as 1st upvalue of 'lcl' (may be LUA_ENV)
                     lcl.upvalues[0].value = gt.clone();
                 }
             }
         }
     }
-    Ok(0)
+    res
 }
 
 /// Returns the index of the top element in the stack.
 /// Because indices start at 1, this result is equal to the number of
 /// elements in the stack (and so 0 means an empty stack).
 pub fn get_top(s: &mut LuaState) -> usize {
-    s.stack.len() - s.base_ci[s.ci].base
+    s.stack.len() - (s.base_ci[s.ci].func + 1)
 }
 
 /// Pushes onto the stack the value of the global name.
@@ -150,8 +152,12 @@ pub fn push_string(s: &mut LuaState, value: &str) {
     s.push_string(value);
 }
 
-pub fn push_number(s: &mut LuaState, value: LuaNumber) {
+pub fn push_number(s: &mut LuaState, value: LuaFloat) {
     s.push_number(value);
+}
+
+pub fn push_integer(s: &mut LuaState, value: LuaInteger) {
+    s.push_integer(value);
 }
 
 pub fn push_boolean(s: &mut LuaState, value: bool) {
@@ -162,14 +168,14 @@ pub fn push_nil(s: &mut LuaState) {
     s.push_nil();
 }
 
-pub fn to_number(s: &mut LuaState, index: isize) -> LuaNumber {
+pub fn to_number(s: &mut LuaState, index: isize) -> Option<LuaFloat> {
     // TODO convert in stack
-    s.index2adr(index).get_number_value()
+    s.index2adr(index).into_float().ok()
 }
 
-pub fn to_integer(s: &mut LuaState, index: isize) -> LuaInteger {
+pub fn to_integer(s: &mut LuaState, index: isize) -> Option<LuaInteger> {
     // TODO convert in stack
-    s.index2adr(index).get_number_value() as LuaInteger
+    s.index2adr(index).into_integer().ok()
 }
 
 pub fn to_boolean(s: &mut LuaState, index: isize) -> bool {
@@ -177,18 +183,37 @@ pub fn to_boolean(s: &mut LuaState, index: isize) -> bool {
     s.index2adr(index).is_false()
 }
 
+/// Returns true if the value at the given index is a number or a string convertible to a number, and false otherwise.
 pub fn is_number(s: &mut LuaState, index: isize) -> bool {
-    s.index2adr(index).is_number()
+    match s.index2adr(index) {
+        TValue::Float(_) => true,
+        TValue::Integer(_) => true,
+        v @ TValue::String(_) => v.to_float().is_ok(),
+        _ => false,
+    }
+}
+
+/// Returns true if the value at the given index is an integer (that is, the value is a number and is represented as an integer), and false otherwise.
+pub fn is_integer(s: &mut LuaState, index: isize) -> bool {
+    matches!(s.index2adr(index), TValue::Integer(_))
 }
 
 pub fn is_boolean(s: &mut LuaState, index: isize) -> bool {
     s.index2adr(index).is_boolean()
 }
 
+/// Returns true if the value at the given index is a string
+/// or a number (which is always convertible to a string), and false otherwise.
 pub fn is_string(s: &mut LuaState, index: isize) -> bool {
-    s.index2adr(index).is_string()
+    match s.index2adr(index) {
+        TValue::Float(_) => true,
+        TValue::Integer(_) => true,
+        TValue::String(_) => true,
+        _ => false,
+    }
 }
 
+/// Returns true if the value at the given index is nil, and false otherwise.
 pub fn is_nil(s: &mut LuaState, index: isize) -> bool {
     s.index2adr(index).is_nil()
 }
@@ -203,12 +228,7 @@ pub fn is_table(s: &mut LuaState, index: isize) -> bool {
 }
 
 pub fn to_pointer(s: &mut LuaState, index: isize) -> *const TValue {
-    let index = if index < 0 {
-        s.stack.len() - (-index) as usize
-    } else {
-        index as usize + s.base_ci[s.ci].base
-    };
-    &s.stack[index as usize] as *const TValue
+    s.index2adr(index).to_pointer()
 }
 
 pub fn concat(state: &mut LuaState, n: usize) -> Result<(), LuaError> {
@@ -264,7 +284,7 @@ pub(crate) fn set_metatable(state: &mut LuaState, obj_index: i32) {
     }
 }
 
-pub(crate) fn raw_get_i(state: &mut LuaState, idx: i32, n: i32) {
+pub(crate) fn raw_get_i(state: &mut LuaState, idx: isize, n: usize) {
     let o = state.index2adr(idx as isize);
     if let TValue::Table(tref) = o {
         let value = {
@@ -315,7 +335,7 @@ pub fn next(s: &mut LuaState, idx: i32) -> bool {
 }
 
 pub fn push_global_table(state: &mut LuaState) {
-    raw_get_i(state, LUA_REGISTRYINDEX as i32, LUA_RIDX_GLOBALS as i32);
+    raw_get_i(state, LUA_REGISTRYINDEX, LUA_RIDX_GLOBALS);
 }
 
 pub fn raw_get(s: &mut LuaState, idx: i32) {
@@ -384,6 +404,16 @@ pub fn abs_index(s: &mut LuaState, idx: isize) -> isize {
     }
 }
 
-pub fn is_none_or_nil(s: &mut LuaState, index: i32) -> bool {
-    !s.is_index_valid(index as isize) || s.index2adr(index as isize).is_nil()
+/// Returns true if the given index is not valid or if the value at this index is nil, and false otherwise.
+pub fn is_none_or_nil(s: &mut LuaState, index: isize) -> bool {
+    is_none(s, index) || is_nil(s, index)
+}
+
+/// Returns true if the given index is not valid, and false otherwise.
+pub fn is_none(s: &mut LuaState, index: isize) -> bool {
+    !s.is_index_valid(index as isize)
+}
+
+pub fn number_to_integer(v: LuaFloat) -> LuaInteger {
+    v as LuaInteger
 }

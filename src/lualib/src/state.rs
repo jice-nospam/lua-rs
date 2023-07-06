@@ -10,7 +10,8 @@ use crate::{
     luaH::TableRef,
     object::{Closure, ClosureRef, Proto, ProtoId, RClosure, StkId, TValue, UpVal},
     opcodes::{get_arg_b, get_arg_c, rk_is_k, BIT_RK},
-    LuaNumber, LuaRustFunction, LUA_MINSTACK, LUA_MULTRET, LUA_REGISTRYINDEX, LUA_RIDX_GLOBALS,
+    LuaFloat, LuaInteger, LuaRustFunction, LUA_MINSTACK, LUA_MULTRET, LUA_REGISTRYINDEX,
+    LUA_RIDX_GLOBALS,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -21,24 +22,32 @@ pub type PanicFunction = fn(&mut LuaState) -> i32;
 pub const EXTRA_STACK: usize = 5;
 
 // Bits in CallInfo call_status
+/// original value of 'allowhook'
+pub const CIST_OAH: u32 = 1 << 0;
 /// call is running a Lua function
-pub const CIST_LUA: u32 = 1 << 0;
+pub const CIST_LUA: u32 = 1 << 1;
 /// call is running a debug hook
-pub const CIST_HOOKED: u32 = 1 << 1;
-/// call is running on same invocation of luaV_execute of previous call
-pub const CIST_REENTRY: u32 = 1 << 2;
-/// call reentered after suspension
-pub const CIST_YIELDED: u32 = 1 << 3;
+pub const CIST_HOOKED: u32 = 1 << 2;
+/// call is running on a fresh invocation of luaV_execute
+pub const CIST_FRESH: u32 = 1 << 3;
 /// call is a yieldable protected call
 pub const CIST_YPCALL: u32 = 1 << 4;
-/// call has an error status (pcall)
-pub const CIST_STAT: u32 = 1 << 5;
 /// call was tail called
-pub const CIST_TAIL: u32 = 1 << 6;
+pub const CIST_TAIL: u32 = 1 << 5;
 /// last hook called yielded
-pub const CIST_HOOKYIELD: u32 = 1 << 7;
+pub const CIST_HOOKYIELD: u32 = 1 << 6;
+/// using __lt for __le
+pub const CIST_LEQ: u32 = 1 << 7;
+/// call is running a finalizer
+pub const CIST_FIN: u32 = 1 << 8;
 
 /// informations about a call
+/// When a thread yields, 'func' is adjusted to pretend that the
+/// top function has only the yielded values in its stack; in that
+/// case, the actual 'func' value is saved in field 'extra'.
+/// When a function calls another with a continuation, 'extra' keeps
+/// the function index so that, in case of errors, the continuation
+/// function can be called with the correct top.
 #[derive(Default)]
 pub struct CallInfo {
     /// function index in the stack
@@ -59,7 +68,6 @@ pub struct CallInfo {
     pub ctx: u32,
     /// continuation in case of yields
     pub k: Option<LuaRustFunction>,
-    pub status: u32,
 }
 
 impl CallInfo {
@@ -68,6 +76,7 @@ impl CallInfo {
     }
 }
 
+/// 'global state', shared by all threads of this state
 pub struct GlobalState {
     /// to be called in unprotected errors
     pub panic: Option<PanicFunction>,
@@ -86,6 +95,7 @@ impl Default for GlobalState {
     }
 }
 
+/// 'per thread' state
 pub struct LuaState {
     pub g: GlobalState,
     /// stack
@@ -167,8 +177,8 @@ impl LuaState {
         let mut ci = CallInfo::new();
         // `function' entry for this `ci'
         //self.stack.push(TValue::Nil);
-        ci.base = 0;
         ci.top = 1 + LUA_MINSTACK;
+        ci.call_status = CIST_LUA;
         self.base_ci.push(ci);
     }
     #[inline]
@@ -188,8 +198,11 @@ impl LuaState {
     pub(crate) fn push_string(&mut self, value: &str) {
         self.stack.push(TValue::String(Rc::new(value.to_owned())));
     }
-    pub(crate) fn push_number(&mut self, value: LuaNumber) {
-        self.stack.push(TValue::Number(value));
+    pub(crate) fn push_number(&mut self, value: LuaFloat) {
+        self.stack.push(TValue::Float(value));
+    }
+    pub(crate) fn push_integer(&mut self, value: LuaInteger) {
+        self.stack.push(TValue::Integer(value));
     }
     pub(crate) fn push_boolean(&mut self, value: bool) {
         self.stack.push(TValue::Boolean(value));
@@ -212,9 +225,10 @@ impl LuaState {
             // need to prepare continuation
             self.base_ci[self.ci].k = k; // save continuation
             self.base_ci[self.ci].ctx = ctx; // save context
-            self.dcall(func, nresults, true)?; // do the call
+            self.dcall(func, nresults)?; // do the call
         } else {
-            self.dcall(func, nresults, false)?;
+            // no continuation or no yieldable
+            self.dcall_no_yield(func, nresults)?;
         }
         self.adjust_results(nresults);
         Ok(())
@@ -439,31 +453,68 @@ impl LuaState {
         self.stack.truncate(newlen);
     }
 
-    pub(crate) fn poscall(&mut self, first_result: u32) -> bool {
+    /// Finishes a function call: calls hook if necessary, removes CallInfo,
+    /// moves current number of results to proper place; returns 0 iff call
+    /// wanted multiple (variable number of) results.
+    pub(crate) fn poscall(&mut self, first_result: StkId, nres: usize) -> bool {
         // TODO hooks
         let ci = &self.base_ci[self.ci];
         // res == final position of 1st result
-        let mut res = ci.func;
+        let res = ci.func;
         let wanted = ci.nresults;
 
         self.base_ci.pop(); // back to caller
         self.ci -= 1;
-        let mut i = wanted;
-        // move results to correct place
-        let mut first_result = first_result as usize;
-        while i != 0 && first_result < self.stack.len() {
-            self.stack[res] = self.stack[first_result].clone();
-            res += 1;
-            first_result += 1;
-            i -= 1;
+        // move results to proper place
+        self.move_results(first_result, res, nres, wanted)
+    }
+
+    /// Given 'nres' results at 'firstResult', move 'wanted' of them to 'res'.
+    /// Handle most typical cases (zero results for commands, one result for
+    /// expressions, multiple results for tail calls/single parameters)
+    /// separated.
+    fn move_results(&mut self, first_result: StkId, res: StkId, nres: usize, wanted: i32) -> bool {
+        match wanted {
+            0 => (), // nothing to move
+            1 => {
+                if nres == 0 {
+                    // no results?
+                    self.set_stack_from_value(res, TValue::Nil); // adjust with nil
+                } else {
+                    self.set_stack_from_idx(res, first_result); // move it to proper place
+                }
+            }
+            LUA_MULTRET => {
+                for i in 0..nres {
+                    // move all results to correct place
+                    self.set_stack_from_idx(res + i, first_result + i);
+                }
+                self.stack.resize(res + nres, TValue::Nil);
+                return false; //  wanted == LUA_MULTRET
+            }
+            _ => {
+                if wanted <= nres as i32 {
+                    // enough results?
+                    for i in 0..wanted as usize {
+                        // move wanted results to correct place
+                        self.set_stack_from_idx(res + i, first_result + i);
+                    }
+                } else {
+                    // not enough results; use all of them plus nils
+                    for i in 0..nres {
+                        // move all results to correct place
+                        self.set_stack_from_idx(res + i, first_result + i);
+                    }
+                    for i in nres..wanted as usize {
+                        // complete wanted number of results
+                        self.set_stack_from_value(res + i, TValue::Nil);
+                    }
+                }
+            }
         }
-        while i > 0 {
-            i = -1;
-            self.stack[res] = TValue::Nil;
-            res += 1;
-        }
-        self.stack.resize(res, TValue::Nil);
-        wanted != LUA_MULTRET
+        self.stack.resize(res + wanted as usize, TValue::Nil); // top points after the last result
+
+        true
     }
 
     pub(crate) fn find_upval(&mut self, func: usize, level: usize) -> UpVal {
@@ -496,13 +547,14 @@ impl LuaState {
         stack: &mut [TValue],
         obj: StkId,
         dst: Option<StkId>,
-    ) -> Option<LuaNumber> {
+    ) -> Option<LuaFloat> {
         match &stack[obj] {
-            TValue::Number(n) => Some(*n),
+            TValue::Integer(n) => Some(*n as LuaFloat),
+            TValue::Float(n) => Some(*n),
             TValue::String(s) => match str2d(s) {
                 Some(n) => {
                     if let Some(dst) = dst {
-                        stack[dst] = TValue::Number(n);
+                        stack[dst] = TValue::Float(n);
                     }
                     Some(n)
                 }

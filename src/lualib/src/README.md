@@ -29,7 +29,9 @@ Status :
     - ☒ `lua_getallocf`
     - ☐ `lua_getctx`
     - ☑ `lua_getfield`
+    - ☒ `lua_getextraspace`
     - ☑ `lua_getglobal`
+    - ☐ `lua_geti`
     - ☑ `lua_getmetatable`
     - ☐ `lua_gettable`
     - ☑ `lua_gettop`
@@ -39,15 +41,19 @@ Status :
     - ☑ `lua_isboolean`
     - ☐ `lua_iscfunction` => `api::is_rust_function`
     - ☑ `lua_isfunction`
+    - ☑ `lua_isinteger`
     - ☐ `lua_islightuserdata`
     - ☑ `lua_isnil`
-    - ☐ `lua_isnone`
-    - ☐ `lua_isnoneornil`
+    - ☑ `lua_isnone`
+    - ☑ `lua_isnoneornil`
     - ☑ `lua_isnumber`
     - ☑ `lua_isstring`
     - ☑ `lua_istable`
     - ☐ `lua_isthread`
     - ☐ `lua_isuserdata`
+    - ☐ `lua_isyieldable`
+    - ☐ `lua_KContext`
+    - ☐ `lua_KFunction`
     - ☐ `lua_len`
     - ☑ `lua_load`
     - ☐ `lua_newstate`
@@ -55,7 +61,8 @@ Status :
     - ☐ `lua_newthread`
     - ☐ `lua_newuserdata`
     - ☑ `lua_next`
-    - ☑ `lua_Number` => `LuaNumber`
+    - ☑ `lua_Number` => `LuaFloat`
+    - ☑ `lua_numbertointeger`
     - ☑ `lua_pcall`
     - ☐ `lua_pcallk`
     - ☑ `lua_pop`
@@ -64,7 +71,7 @@ Status :
     - ☑ `lua_pushcfunction` => `api::push_rust_function`
     - ☒ `lua_pushfstring`
     - ☑ `lua_pushglobaltable`
-    - ☐ `lua_pushinteger`
+    - ☑ `lua_pushinteger`
     - ☐ `lua_pushlightuserdata`
     - ☑ `lua_pushliteral`
     - ☒ `lua_pushlstring`
@@ -72,7 +79,6 @@ Status :
     - ☑ `lua_pushnumber`
     - ☑ `lua_pushstring`
     - ☐ `lua_pushthread`
-    - ☐ `lua_pushunsigned`
     - ☑ `lua_pushvalue`
     - ☒ `lua_pushvfstring`
     - ☐ `lua_rawequal`
@@ -88,15 +94,18 @@ Status :
     - ☑ `lua_remove`
     - ☐ `lua_replace`
     - ☐ `lua_resume`
+    - ☐ `lua_rotate`
     - ☒ `lua_setallocf`
     - ☑ `lua_setfield`
     - ☑ `lua_setglobal`
+    - ☐ `lua_seti`
     - ☑ `lua_setmetatable`
     - ☐ `lua_settable`
     - ☑ `lua_settop`
     - ☐ `lua_setuservalue`
     - ☑ `lua_State` => `LuaState`
     - ☐ `lua_status`
+    - ☐ `lua_stringtonumber`
     - ☑ `lua_toboolean`
     - ☐ `lua_tocfunction` => `api::to_rust_function`
     - ☑ `lua_tointeger`
@@ -107,10 +116,9 @@ Status :
     - ☑ `lua_topointer`
     - ☐ `lua_tostring`
     - ☐ `lua_tothread`
-    - ☐ `lua_tounsigned`
-    - ☐ `lua_tounsignedx`
     - ☐ `lua_touserdata`
     - ☑ `lua_type` => use `TValue` enum
+    - ☐ `lua_typename`
     - ☐ `lua_Unsigned`
     - ☐ `lua_upvalueindex`
     - ☐ `lua_version`
@@ -118,6 +126,22 @@ Status :
     - ☐ `lua_xmove`
     - ☐ `lua_yield`
     - ☐ `lua_yieldk`
+
+- debug interface
+    - ☐ `lua_Debug`
+    - ☐ `lua_gethook`
+    - ☐ `lua_gethookcount`
+    - ☐ `lua_gethookmask`
+    - ☐ `lua_getinfo`
+    - ☐ `lua_getlocal`
+    - ☐ `lua_getstack`
+    - ☐ `lua_getupvalue`
+    - ☐ `lua_Hook`
+    - ☐ `lua_sethook`
+    - ☐ `lua_setlocal`
+    - ☐ `lua_setupvalue`
+    - ☐ `lua_upvalueid`
+    - ☐ `lua_upvaluejoin`
 
 - auxiliary library
     - ☐ `luaL_addchar`
@@ -133,9 +157,7 @@ Status :
     - ☐ `luaL_callmeta`
     - ☐ `luaL_checkany`
     - ☑ `luaL::check_boolean` (not in Lua auxlib)
-    - ☐ `luaL_checkint`
     - ☑ `luaL_checkinteger`
-    - ☐ `luaL_checklong`
     - ☒ `luaL_checklstring`
     - ☑ `luaL_checknumber`
     - ☐ `luaL_checkoption`
@@ -144,7 +166,6 @@ Status :
     - ☑ `luaL::check_table` (not in Lua auxlib)
     - ☐ `luaL_checktype`
     - ☐ `luaL_checkudata`
-    - ☐ `luaL_checkunsigned`
     - ☐ `luaL_checkversion`
     - ☐ `luaL_dofile`
     - ☑ `luaL_dostring`
@@ -166,15 +187,13 @@ Status :
     - ☑ `luaL_newmetatable`
     - ☑ `luaL_newstate`
     - ☑ `luaL_openlibs`
+    - ☐ `luaL_opt`
     - ☑ `luaL::opt_boolean` (not in Lua auxlib)
-    - ☑ `luaL_optint`
-    - ☐ `luaL_optinteger`
-    - ☐ `luaL_optlong`
+    - ☑ `luaL_optinteger`
     - ☒ `luaL_optlstring`
     - ☑ `luaL_optnumber`
     - ☑ `luaL_optstring`
     - ☑ `luaL::opt_table` (not in Lua auxlib)
-    - ☐ `luaL_optunsigned`
     - ☒ `luaL_prepbuffer`
     - ☒ `luaL_prepbuffsize`
     - ☐ `luaL_pushresult`
@@ -184,6 +203,7 @@ Status :
     - ☑ `luaL_requiref`
     - ☑ `luaL_setfuncs`
     - ☐ `luaL_setmetatable`
+    - ☒ `luaL_Stream`
     - ☐ `luaL_testudata`
     - ☒ `luaL_tolstring`
     - ☐ `luaL_traceback`

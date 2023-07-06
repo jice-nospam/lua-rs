@@ -9,11 +9,9 @@ It has not been much tested beyond the unit tests and the benchmarks ([see bench
 
 The core of the 5.2 version of the language is implemented in the [v5.2.x](https://github.com/jice-nospam/lua-rs/tree/v5.2.x) branch with `goto` support. The bitwise operations library is not implemented as it's scrapped in 5.3.
 
-Next to be added : integers (5.3) and consts (5.4).
+The core of the 5.3 version of the language is implemented in the [v5.3.x](https://github.com/jice-nospam/lua-rs/tree/v5.3.x) branch with integer support including bitwise operations. The utf-8 library is not implemented.
 
-I don't plan to implement all the features of the interpreter though. For example, not sure I'll do metamethods.
-
-The long term goal once I have a stable MVP is to evolve this into a different language to remove Lua's part I don't like but if you want to stick with 100% Lua compatibility, this project can be forked.
+Next to be added : consts (5.4).
 
 Current status :
 
@@ -95,23 +93,12 @@ rlua={version="*",default-features = false, features=["builtin-lua53"]}
 
 ## benchmark results
 
-### v5.1.x branch
-
-| name | lua-rs | rlua | ratio |
-|------|--------|------|-------|
-| spectral | 96ms | 31ms | <span style="color:red">3.41</span> |
-| nbody | 2.1ms | 1.9ms | <span style="color:orange">1.1</span> |
-| mandelbrot | 36ms | 17.5ms | <span style="color:red">2.1</span> |
-| binary_trees | 5.4ms | 3.6ms | <span style="color:orange">1.5</span> |
-
-### v5.2.x branch
-
-| name | lua-rs | rlua | ratio |
-|------|--------|------|-------|
-| spectral |  |  |  |
-| nbody |  |  |  |
-| mandelbrot |  |  |  |
-| binary_trees |  |  |  |
+| name         | lua-rs<br/>5.1 | rlua<br/>5.1 | lua-rs<br/>5.2 | lua-rs<br/>5.3 | rlua<br/>5.3 | lua-rs<br/>5.4 | rlua<br/>5.4 |
+|--------------|----------------|--------------|----------------|----------------|--------------|----------------|--------------|
+| spectral     |      82.8      |     20.3     |     94.7       |     96.7       |    27.8      |                |              |
+| nbody        |       0.2      |      0.1     |      0.2       |      0.6       |     0.5      |                |              |
+| mandelbrot   |      27.6      |      6.3     |     31.2       |     34.3       |    11.6      |                |              |
+| binary_trees |       1.6      |      0.8     |      1.8       |      2.3       |     1.2      |                |              |
 
 ## profiling (linux)
 

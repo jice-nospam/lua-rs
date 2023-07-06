@@ -7,7 +7,7 @@
 
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-use crate::{object::TValue, LuaNumber};
+use crate::{object::TValue, LuaFloat, LuaInteger};
 
 pub type TableRef = Rc<RefCell<Table>>;
 
@@ -59,7 +59,15 @@ impl Table {
     }
     pub fn set(&mut self, key: TValue, value: TValue) {
         match key {
-            TValue::Number(n) if n >= 1.0 => {
+            TValue::Integer(n) if n >= 1 => {
+                let n = n as usize;
+                if n > self.array.len() {
+                    let new_size = n.max(self.array.len() * 2);
+                    self.array.resize(new_size, TValue::Nil);
+                }
+                self.array[n - 1] = value;
+            }
+            TValue::Float(n) if n >= 1.0 => {
                 let n = n as usize;
                 if n > self.array.len() {
                     let new_size = n.max(self.array.len() * 2);
@@ -83,8 +91,8 @@ impl Table {
         if key > self.array.len() {
             let new_size = key.max(self.array.len() * 2);
             self.array.resize(new_size, TValue::Nil);
-        } 
-        self.array[key-1] = value;
+        }
+        self.array[key - 1] = value;
     }
     /// iterator over both the array and hashmap
     /// returns (next_key, value)
@@ -96,7 +104,7 @@ impl Table {
                     // return first non nil value
                     for (i, v) in self.array.iter().enumerate() {
                         if !v.is_nil() {
-                            return (TValue::Number(i as LuaNumber + 1.0), v.clone());
+                            return (TValue::Float(i as LuaFloat + 1.0), v.clone());
                         }
                     }
                 }
@@ -108,13 +116,42 @@ impl Table {
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .unwrap_or((TValue::Nil, TValue::Nil));
             }
-            TValue::Number(idx) => {
+            TValue::Integer(idx) => {
+                if *idx >= 0 {
+                    if (*idx as usize) < self.array.len() {
+                        // key is an integer. get next non nil value
+                        for (i, v) in self.array.iter().enumerate().skip(*idx as usize) {
+                            if !v.is_nil() {
+                                return (TValue::Integer(i as LuaInteger + 1), v.clone());
+                            }
+                        }
+                    } else {
+                        return self
+                            .node
+                            .iter()
+                            .next()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .unwrap_or((TValue::Nil, TValue::Nil));
+                    }
+                }
+                // key is not an array idx
+                let mut found = false;
+                for k in self.node.keys() {
+                    if k == key {
+                        found = true;
+                    } else if found {
+                        return (k.clone(), self.node.get(k).unwrap().clone());
+                    }
+                }
+                return (TValue::Nil, TValue::Nil);
+            }
+            TValue::Float(idx) => {
                 if idx.fract() == 0.0 && *idx >= 0.0 {
                     if (*idx as usize) < self.array.len() {
                         // key is an integer. get next non nil value
                         for (i, v) in self.array.iter().enumerate().skip(*idx as usize) {
                             if !v.is_nil() {
-                                return (TValue::Number(i as LuaNumber+1.0), v.clone());
+                                return (TValue::Float(i as LuaFloat + 1.0), v.clone());
                             }
                         }
                     } else {
@@ -153,16 +190,21 @@ impl Table {
     pub fn get(&mut self, key: &TValue) -> Option<&TValue> {
         match *key {
             TValue::Nil => Some(&TValue::Nil),
-            TValue::Number(n) if n >= 1.0 => {
+            TValue::Integer(n) if n >= 1 => {
                 let n = n as usize;
                 if n > self.array.len() {
                     self.array.resize(n, TValue::Nil);
                 }
                 Some(&self.array[n - 1])
             }
-            _ => {
-                self.node.get(key)
-            },
+            TValue::Float(n) if n >= 1.0 => {
+                let n = n as usize;
+                if n > self.array.len() {
+                    self.array.resize(n, TValue::Nil);
+                }
+                Some(&self.array[n - 1])
+            }
+            _ => self.node.get(key),
         }
     }
 }
@@ -173,7 +215,7 @@ mod tests {
     #[test]
     fn array() {
         let mut t = luaH::Table::new();
-        let key = TValue::Number(1.0);
+        let key = TValue::Float(1.0);
         t.set(key.clone(), TValue::from("test1"));
         let v = t.get(&key).unwrap();
         match v {

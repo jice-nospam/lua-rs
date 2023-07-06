@@ -14,9 +14,9 @@ Status :
     - ☑ _G
     - ☐ getmetatable(object)
     - ☑ ipairs(t)
-    - ☐ load(ld [, source [, mode [, env]]])
+    - ☐ load(chunk [, chunkname [, mode [, env]]])
     - ☒ loadfile([filename [, mode [, env]]])
-    - ☐ next(table [, index])
+    - ☑ next(table [, index])
     - ☑ pairs(t)
     - ☐ pcall(f [, arg1, ···])
     - ☑ print(···)
@@ -27,18 +27,19 @@ Status :
     - ☐ select(index, ···)
     - ☐ setmetatable(table, metatable)
     - ☑ tonumber(e [, base])
-    - ☑ tostring(e)
+    - ☑ tostring(v)
     - ☐ type(v)
     - ☑ _VERSION
     - ☐ xpcall(f, msgh [, arg1, ···])
-- coroutines
+- coroutines manipulation : `coroutine`
     - ☐ create(f)
+    - ☐ isyieldable()
     - ☐ resume(co[,val1, ...])
     - ☐ running()
     - ☐ status(co)
     - ☐ wrap(f)
     - ☐ yield(...)
-- debug
+- debug library : `debug`
     - ☐ debug()
     - ☐ getfenv(o)
     - ☐ gethook([thread])
@@ -56,7 +57,7 @@ Status :
     - ☐ traceback([thread,] [message [, level]])
     - ☐ upvalueid (f, n)
     - ☐ upvaluejoin (f1, n1, f2, n2)
-- io
+- input and output facilities : `io`
     - ☒ close([file])
     - ☒ flush()
     - ☒ input([file])
@@ -70,41 +71,39 @@ Status :
     - ☑ write(···)
     - ☒ file:close()
     - ☒ file:flush()
-    - ☒ file:lines()
+    - ☒ file:lines(...)
     - ☒ file:read(...)
     - ☒ file:seek([whence] [, offset])
     - ☒ file:setvbuf(mode [, size])
     - ☒ file:write(···)
-- math
+- mathematical functions : `math`
     - ☑ abs(x)
     - ☑ acos(x)
     - ☑ asin(x)
-    - ☑ atan(x)
-    - ☑ atan2(y,x)
+    - ☑ atan(y[,x])
     - ☑ ceil(x)
     - ☑ cos(x)
-    - ☑ cosh(x)
     - ☑ deg(x)
     - ☑ exp(x)
     - ☑ floor(x)
     - ☑ fmod(x,y)
-    - ☒ frexp(x)
     - ☑ huge
-    - ☑ ldexp(m,e)
     - ☑ log(x [,base])
     - ☑ max(x, ...)
     - ☑ min(x, ...)
+    - ☑ mininteger
+    - ☑ maxinteger
     - ☑ modf(x)
     - ☑ pi
-    - ☑ pow(x,y)
     - ☑ rad(x)
     - ☐ random([m[,n]])
     - ☐ randomseed(x)
     - ☑ sin(x)
-    - ☑ sinh(x)
     - ☑ sqrt(x)
     - ☑ tan(x)
-    - ☑ tanh(x)
+    - ☑ tointeger(x)
+    - ☑ type(x)
+    - ☐ ult(m,n)
 - modules
     - ☒ require(modname)
     - ☒ package.config
@@ -115,7 +114,7 @@ Status :
     - ☒ package.preload
     - ☒ package.searchers
     - ☒ package.searchpath (name, path [, sep [, rep]])
-- os
+- operating system facilities : `os`
     - ☐ clock()
     - ☐ date([format [, time]])
     - ☐ difftime(t2, t1)
@@ -126,10 +125,10 @@ Status :
     - ☒ setlocale(locale [, category])
     - ☐ time([table])
     - ☐ tmpname()
-- string
+- string manipulation : `string`
     - ☐ byte(s [, i [, j]])
     - ☑ char(...)
-    - ☐ dump(function)
+    - ☐ dump(function [, strip])
     - ☐ find(s, pattern [, init [, plain]])
     - ☑ format(formatstring, ...)
     - ☐ gmatch(s, pattern)
@@ -137,14 +136,25 @@ Status :
     - ☐ len(s)
     - ☐ lower(s)
     - ☐ match(s, pattern [, init])
+    - ☐ pack (fmt, v1, v2, ···)
+    - ☐ packsize (fmt)
     - ☐ rep(s, n [, sep])
     - ☐ reverse(s)
     - ☐ sub(s, i [, j])
+    - ☐ unpack (fmt, s, [,pos])
     - ☐ upper(s)
-- table manipulation
+- table manipulation : `table`
     - ☐ concat(table [, sep [, i [, j]]])
     - ☐ insert(table, [pos,] value)
+    - ☐ move (a1, f, e, t [,a2])
     - ☐ pack(...)
     - ☐ remove(table [, pos])
     - ☐ sort(table [, comp])
     - ☑ unpack(list [, i [, j]])
+- UTF-8 support : `utf8`
+    - ☐ char(...)
+    - ☐ charpattern
+    - ☐ codes(s)
+    - ☐ codepoint (s [, i [, j]])
+    - ☐ len (s [, i [, j]])
+    - ☐ offset (s, n [, i])

@@ -49,11 +49,21 @@ fn seterrorobj(state: &mut LuaState, errcode: &LuaError) {
 }
 
 impl LuaState {
+    pub(crate) fn dcall_no_yield(
+        &mut self,
+        cl_stkid: StkId,
+        nresults: i32,
+    ) -> Result<(), LuaError> {
+        self.nny += 1;
+        self.dcall(cl_stkid, nresults)?;
+        self.nny -= 1;
+        Ok(())
+    }
     ///  Call a function (Rust or Lua). The function to be called is at stack[cl_stkid].
     ///  The arguments are on the stack, right after the function.
     ///  When returns, all the results are on the stack, starting at the original
     ///  function position.
-    pub(crate) fn dcall(&mut self, cl_stkid: StkId, nresults: i32, allow_yield: bool) -> Result<(), LuaError> {
+    pub(crate) fn dcall(&mut self, cl_stkid: StkId, nresults: i32) -> Result<(), LuaError> {
         self.n_rcalls += 1;
         if self.n_rcalls >= LUAI_MAXRCALLS {
             if self.n_rcalls == LUAI_MAXRCALLS {
@@ -63,56 +73,55 @@ impl LuaState {
                 return Err(LuaError::ErrorHandlerError);
             }
         }
-        if ! allow_yield {
-            self.nny+=1;
-        }
         if self.stack[cl_stkid].is_function() {
-            if let PrecallStatus::Lua = self.dprecall(cl_stkid, nresults)? { // is a Lua function ?
+            if let PrecallStatus::Lua = self.dprecall(cl_stkid, nresults)? {
+                // is a Lua function ?
                 self.vexecute()?; // call it
             }
-        }
-        if ! allow_yield {
-            self.nny -= 1;
         }
         self.n_rcalls -= 1;
         Ok(())
     }
 
+    /// Prepares a function call: checks the stack, creates a new CallInfo
+    /// entry, fills in the relevant information, calls hook if needed.
+    /// If function is a Rust function, does the call, too. (Otherwise, leave
+    /// the execution ('LuaState::vexecute') to the caller, to allow stackless
+    /// calls.)
     pub(crate) fn dprecall(
         &mut self,
-        cl_stkid: StkId,
+        func: StkId,
         nresults: i32,
     ) -> Result<PrecallStatus, LuaError> {
-        let cl_stkid = match &self.stack[cl_stkid] {
-            TValue::Function(_) => cl_stkid,
+        let func = match &self.stack[func] {
+            TValue::Function(_) => func,
             _ => {
                 // func' is not a function. check the `function' metamethod
                 // TODO
                 //self.try_func_tag_method(cl_stkid)?
-                luaG::type_error(self, cl_stkid, "call")?;
+                luaG::type_error(self, func, "call")?;
                 unreachable!()
             }
         };
-        let cl = self.get_closure_ref(cl_stkid);
-        let cl=cl.borrow();
+        let cl = self.get_closure_ref(func);
+        let cl = cl.borrow();
         match &*cl {
             Closure::Lua(cl) => {
                 // Lua function. prepare its call
+                let nargs = self.stack.len() - func - 1;
                 let base = if self.protos[cl.proto].is_vararg {
                     // vararg function
-                    let nargs = self.stack.len() - cl_stkid - 1;
                     self.adjust_varargs(cl.proto, nargs)
                 } else {
                     // no varargs
-                    let base = cl_stkid + 1;
-                    let numparams=self.protos[cl.proto].numparams;
-                    if self.stack.len() > base + numparams {
-                        self.stack.truncate(base + numparams);
+                    let numparams = self.protos[cl.proto].numparams;
+                    for _ in nargs..numparams {
+                        self.stack.push(TValue::Nil);
                     }
-                    base
+                    func + 1
                 };
                 let ci = CallInfo {
-                    func: cl_stkid,
+                    func,
                     base,
                     top: base + self.protos[cl.proto].maxstacksize,
                     nresults,
@@ -128,8 +137,7 @@ impl LuaState {
             Closure::Rust(cl) => {
                 // this is a Rust function, call it
                 let ci = CallInfo {
-                    func: cl_stkid,
-                    base: cl_stkid + 1,
+                    func,
                     top: self.stack.len() + LUA_MINSTACK,
                     nresults,
                     ..Default::default()
@@ -137,8 +145,8 @@ impl LuaState {
                 self.base_ci.push(ci);
                 self.ci += 1;
                 // TODO handle hooks
-                let n = (cl.f)(self).map_err(|_| LuaError::RuntimeError)?;
-                self.poscall(self.stack.len() as u32 - n as u32);
+                let n = (cl.f)(self).map_err(|_| LuaError::RuntimeError)?; // do the actual call
+                self.poscall(self.stack.len() - n as usize, n as usize);
                 Ok(PrecallStatus::Rust)
             }
         }
@@ -196,7 +204,7 @@ pub fn pcall<T>(
 
 fn f_parser<T>(state: &mut LuaState, parser: &mut SParser<T>) -> Result<i32, LuaError> {
     let c = if let Some(ref mut z) = parser.z {
-        z.look_ahead(state)
+        z.look_ahead(state) // read first character
     } else {
         unreachable!()
     };
@@ -215,8 +223,11 @@ pub fn protected_parser<T>(
     zio: luaZ::Zio<T>,
     chunk_name: &str,
 ) -> Result<i32, LuaError> {
+    state.nny += 1; // cannot yield during parsing
     let mut p = SParser::new(zio, chunk_name);
     let top = state.stack.len();
     let errfunc = state.errfunc;
-    pcall(state, f_parser, &mut p, top, errfunc)
+    let status = pcall(state, f_parser, &mut p, top, errfunc);
+    state.nny -= 1;
+    status
 }

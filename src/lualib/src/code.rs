@@ -13,7 +13,7 @@ use crate::{
     },
     parser::{BinaryOp, ExpressionDesc, ExpressionKind, UnaryOp},
     state::LuaState,
-    LuaNumber, LUA_MULTRET,
+    LuaFloat, LuaInteger, LUA_MULTRET,
 };
 
 pub(crate) fn discharge_vars<T>(
@@ -287,14 +287,16 @@ pub(crate) fn exp2rk<T>(
 ) -> Result<u32, LuaError> {
     exp2val(lex, state, ex)?;
     match ex.k {
-        ExpressionKind::NumberConstant
+        ExpressionKind::FloatConstant
+        | ExpressionKind::IntegerConstant
         | ExpressionKind::True
         | ExpressionKind::False
         | ExpressionKind::Nil => {
             if lex.borrow_proto(state, None).k.len() <= MAX_INDEX_RK {
                 ex.info = match ex.k {
                     ExpressionKind::Nil => nil_constant(lex, state) as i32,
-                    ExpressionKind::NumberConstant => number_constant(lex, state, ex.nval) as i32,
+                    ExpressionKind::FloatConstant => float_constant(lex, state, ex.nval) as i32,
+                    ExpressionKind::IntegerConstant => integer_constant(lex, state, ex.ival) as i32,
                     _ => bool_constant(lex, state, ex.k == ExpressionKind::True) as i32,
                 };
                 ex.k = ExpressionKind::Constant;
@@ -318,9 +320,19 @@ fn bool_constant<T>(lex: &mut LexState<T>, state: &mut LuaState, val: bool) -> u
     lex.borrow_mut_fs(None).add_constant(state, o.clone(), o)
 }
 
-pub(crate) fn number_constant<T>(lex: &mut LexState<T>, state: &mut LuaState, val: f64) -> usize {
-    let o = TValue::Number(val);
-    lex.borrow_mut_fs(None).add_constant(state, o.clone(), o)
+pub(crate) fn float_constant<T>(
+    lex: &mut LexState<T>,
+    state: &mut LuaState,
+    val: LuaFloat,
+) -> usize {
+    lex.borrow_mut_fs(None).float_constant(state, val)
+}
+pub(crate) fn integer_constant<T>(
+    lex: &mut LexState<T>,
+    state: &mut LuaState,
+    val: LuaInteger,
+) -> usize {
+    lex.borrow_mut_fs(None).integer_constant(state, val)
 }
 
 fn nil_constant<T>(lex: &mut LexState<T>, state: &mut LuaState) -> usize {
@@ -334,7 +346,7 @@ pub(crate) fn exp2val<T>(
     state: &mut LuaState,
     ex: &mut ExpressionDesc,
 ) -> Result<(), LuaError> {
-    if has_jumps(ex) {
+    if ex.has_jumps() {
         exp2anyreg(lex, state, ex)?;
     } else {
         discharge_vars(lex, state, ex)?;
@@ -349,7 +361,7 @@ pub(crate) fn exp2anyreg<T>(
 ) -> Result<u32, LuaError> {
     discharge_vars(lex, state, ex)?;
     if ex.k == ExpressionKind::NonRelocable {
-        if !has_jumps(ex) {
+        if !ex.has_jumps() {
             return Ok(ex.info as u32); // exp is already in a register
         }
         if ex.info == lex.borrow_fs(None).nactvar as i32 {
@@ -404,7 +416,7 @@ pub(crate) fn exp2anyregup<T>(
     state: &mut LuaState,
     exp: &mut ExpressionDesc,
 ) -> Result<(), LuaError> {
-    if exp.k != ExpressionKind::UpValue || has_jumps(exp) {
+    if exp.k != ExpressionKind::UpValue || exp.has_jumps() {
         exp2anyreg(lex, state, exp).map(|_| ())
     } else {
         Ok(())
@@ -421,7 +433,7 @@ fn exp2reg<T>(
     if exp.k == ExpressionKind::Jump {
         concat_jump(lex, state, &mut exp.t, exp.info)?; // put this jump in `t' list
     }
-    if has_jumps(exp) {
+    if exp.has_jumps() {
         let mut p_f = NO_JUMP; // position of an eventual LOAD false
         let mut p_t = NO_JUMP; // position of an eventual LOAD true
         if need_value(lex, state, exp.t) || need_value(lex, state, exp.f) {
@@ -533,11 +545,6 @@ fn need_value<T>(lex: &mut LexState<T>, state: &mut LuaState, list: i32) -> bool
     false
 }
 
-#[inline]
-fn has_jumps(exp: &mut ExpressionDesc) -> bool {
-    exp.t != exp.f
-}
-
 fn concat_jump<T>(
     lex: &mut LexState<T>,
     state: &mut LuaState,
@@ -589,10 +596,12 @@ fn discharge2reg<T>(
                 exp.info as u32,
             )?;
         }
-        ExpressionKind::NumberConstant => {
-            let kid = lex
-                .borrow_mut_fs(None)
-                .number_constant(state, exp.nval as LuaNumber) as u32;
+        ExpressionKind::FloatConstant => {
+            let kid = lex.borrow_mut_fs(None).float_constant(state, exp.nval) as u32;
+            code_abx(lex, state, OpCode::LoadK as u32, reg as i32, kid)?;
+        }
+        ExpressionKind::IntegerConstant => {
+            let kid = lex.borrow_mut_fs(None).integer_constant(state, exp.ival) as u32;
             code_abx(lex, state, OpCode::LoadK as u32, reg as i32, kid)?;
         }
         ExpressionKind::Relocable => {
@@ -745,6 +754,7 @@ pub(crate) fn fix_line<T>(lex: &mut LexState<T>, state: &mut LuaState, line: usi
     proto.lineinfo[pc - 1] = line;
 }
 
+/// Apply prefix operation 'op' to expression 'e'
 pub(crate) fn prefix<T>(
     lex: &mut LexState<T>,
     state: &mut LuaState,
@@ -753,30 +763,45 @@ pub(crate) fn prefix<T>(
     line: usize,
 ) -> Result<(), LuaError> {
     let mut e2 = ExpressionDesc::default();
-    e2.init(ExpressionKind::NumberConstant, 0);
+    e2.init(ExpressionKind::IntegerConstant, 0);
     match op {
         UnaryOp::Minus => {
-            if !is_numeral(e) {
-                // cannot operate on non-numeric constants
-                exp2anyreg(lex, state, e)?;
+            if !const_folding(OpCode::UnaryMinus, e, &mut e2) {
+                code_unexpval(lex, state, OpCode::UnaryMinus, e, line)?
             }
-            code_arith(lex, state, OpCode::UnaryMinus, e, &mut e2, line)?;
+        }
+        UnaryOp::BinaryNot => {
+            if !const_folding(OpCode::BinaryNot, e, &mut e2) {
+                code_unexpval(lex, state, OpCode::BinaryNot, e, line)?
+            }
         }
         UnaryOp::Not => {
             code_not(lex, state, e)?;
         }
-        UnaryOp::Len => {
-            exp2anyreg(lex, state, e)?; // cannot operate on constants
-            code_arith(lex, state, OpCode::Len, e, &mut e2, line)?;
-        }
+        UnaryOp::Len => code_unexpval(lex, state, OpCode::Len, e, line)?,
     }
     Ok(())
 }
 
-pub(crate) fn is_numeral(e: &ExpressionDesc) -> bool {
-    e.k == ExpressionKind::NumberConstant && e.t == NO_JUMP && e.f == NO_JUMP
+/// Emit code for unary expressions that "produce values"
+/// (everything but 'not').
+/// Expression to produce final result will be encoded in 'e'.
+fn code_unexpval<T>(
+    lex: &mut LexState<T>,
+    state: &mut LuaState,
+    op: OpCode,
+    e: &mut ExpressionDesc,
+    line: usize,
+) -> Result<(), LuaError> {
+    let r = exp2anyreg(lex, state, e)? as i32; // opcodes operate only on registers
+    free_exp(lex, e);
+    e.info = code_abc(lex, state, op as u32, 0, r, 0)? as i32;
+    e.k = ExpressionKind::Relocable; // all those operations are relocatable
+    fix_line(lex, state, line);
+    Ok(())
 }
 
+/// Code 'not e', doing constant folding.
 fn code_not<T>(
     lex: &mut LexState<T>,
     state: &mut LuaState,
@@ -785,13 +810,16 @@ fn code_not<T>(
     discharge_vars(lex, state, exp)?;
     match exp.k {
         ExpressionKind::Nil | ExpressionKind::False => {
-            exp.k = ExpressionKind::True;
+            exp.k = ExpressionKind::True; // true == not nil == not false
         }
-        ExpressionKind::Constant | ExpressionKind::NumberConstant | ExpressionKind::True => {
-            exp.k = ExpressionKind::False;
+        ExpressionKind::Constant
+        | ExpressionKind::FloatConstant
+        | ExpressionKind::IntegerConstant
+        | ExpressionKind::True => {
+            exp.k = ExpressionKind::False; // false == not "x" == not 0.5 == not 1 == not true
         }
         ExpressionKind::Jump => {
-            invert_jump(lex, state, exp);
+            negate_condition(lex, state, exp);
         }
         ExpressionKind::Relocable | ExpressionKind::NonRelocable => {
             discharge2any_reg(lex, state, exp)?;
@@ -804,6 +832,8 @@ fn code_not<T>(
     Ok(())
 }
 
+/// Process 1st operand 'v' of binary operation 'op' before reading
+/// 2nd operand.
 pub(crate) fn infix<T>(
     lex: &mut LexState<T>,
     state: &mut LuaState,
@@ -811,18 +841,25 @@ pub(crate) fn infix<T>(
     exp: &mut ExpressionDesc,
 ) -> Result<(), LuaError> {
     match op {
-        BinaryOp::And => go_if_true(lex, state, exp),
-        BinaryOp::Or => go_if_false(lex, state, exp),
-        BinaryOp::Concat => exp2nextreg(lex, state, exp),
+        BinaryOp::And => go_if_true(lex, state, exp), // go ahead only if 'v' is true
+        BinaryOp::Or => go_if_false(lex, state, exp), // go ahead only if 'v' is false
+        BinaryOp::Concat => exp2nextreg(lex, state, exp), // operand must be on the 'stack'
         BinaryOp::Add
         | BinaryOp::Sub
         | BinaryOp::Mul
         | BinaryOp::Div
+        | BinaryOp::IntDiv
         | BinaryOp::Mod
-        | BinaryOp::Pow => {
+        | BinaryOp::Pow
+        | BinaryOp::BinaryAnd
+        | BinaryOp::BinaryOr
+        | BinaryOp::BinaryXor
+        | BinaryOp::Shl
+        | BinaryOp::Shr => {
             if !exp.is_numeral() {
                 exp2rk(lex, state, exp)?;
             }
+            // else keep numeral, which may be folded with 2nd operand
             Ok(())
         }
         _ => {
@@ -852,6 +889,7 @@ pub(crate) fn go_if_false<T>(
     Ok(())
 }
 
+/// Emit code to go through if 'e' is true, jump otherwise.
 pub(crate) fn go_if_true<T>(
     lex: &mut LexState<T>,
     state: &mut LuaState,
@@ -859,13 +897,16 @@ pub(crate) fn go_if_true<T>(
 ) -> Result<(), LuaError> {
     discharge_vars(lex, state, exp)?;
     let pc = match exp.k {
-        ExpressionKind::Constant | ExpressionKind::NumberConstant | ExpressionKind::True => {
+        ExpressionKind::Constant
+        | ExpressionKind::FloatConstant
+        | ExpressionKind::IntegerConstant
+        | ExpressionKind::True => {
             // always true; do nothing
             NO_JUMP
         }
         ExpressionKind::Jump => {
-            invert_jump(lex, state, exp);
-            exp.info
+            negate_condition(lex, state, exp); // jump when it is false
+            exp.info // save jump position
         }
         _ => jump_on_cond(lex, state, exp, 0)?,
     };
@@ -875,6 +916,10 @@ pub(crate) fn go_if_true<T>(
     Ok(())
 }
 
+/// Emit instruction to jump if 'e' is 'cond' (that is, if 'cond'
+/// is true, code will jump if 'e' is true.) Return jump position.
+/// Optimize when 'e' is 'not' something, inverting the condition
+/// and removing the 'not'.
 fn jump_on_cond<T>(
     lex: &mut LexState<T>,
     state: &mut LuaState,
@@ -948,12 +993,17 @@ pub(crate) fn op_self<T>(
     Ok(())
 }
 
-fn invert_jump<T>(lex: &mut LexState<T>, state: &mut LuaState, exp: &mut ExpressionDesc) {
+/// Negate condition 'e' (where 'e' is a comparison).
+fn negate_condition<T>(lex: &mut LexState<T>, state: &mut LuaState, exp: &mut ExpressionDesc) {
     let pcref = get_jump_control(lex, state, exp.info);
-    set_arg_a(pcref, if get_arg_a(*pcref) == 0 { 1 } else { 0 });
+    set_arg_a(pcref, 1 - get_arg_a(*pcref));
 }
 
-pub(crate) fn postfix<T>(
+/// Finalize code for binary operation, after reading 2nd operand.
+/// For '(a .. b .. c)' (which is '(a .. (b .. c))', because
+/// concatenation is right associative), merge second CONCAT into first
+/// one.
+pub(crate) fn pos_fix<T>(
     lex: &mut LexState<T>,
     state: &mut LuaState,
     op: BinaryOp,
@@ -984,19 +1034,24 @@ pub(crate) fn postfix<T>(
                     lex.borrow_mut_code(state, exp2.info as usize),
                     exp1.info as u32,
                 );
-                exp1.k = ExpressionKind::Relocable;
-                exp1.info = exp2.info;
+                exp1.init(ExpressionKind::Relocable, exp2.info);
             } else {
                 exp2nextreg(lex, state, exp2)?; // operand must be on the 'stack'
-                code_arith(lex, state, OpCode::Concat, exp1, exp2, line)?;
+                code_bin_expval(lex, state, OpCode::Concat, exp1, exp2, line)?;
             }
         }
         BinaryOp::Add => code_arith(lex, state, OpCode::Add, exp1, exp2, line)?,
         BinaryOp::Sub => code_arith(lex, state, OpCode::Sub, exp1, exp2, line)?,
         BinaryOp::Mul => code_arith(lex, state, OpCode::Mul, exp1, exp2, line)?,
         BinaryOp::Div => code_arith(lex, state, OpCode::Div, exp1, exp2, line)?,
+        BinaryOp::IntDiv => code_arith(lex, state, OpCode::IntegerDiv, exp1, exp2, line)?,
         BinaryOp::Mod => code_arith(lex, state, OpCode::Mod, exp1, exp2, line)?,
         BinaryOp::Pow => code_arith(lex, state, OpCode::Pow, exp1, exp2, line)?,
+        BinaryOp::BinaryAnd => code_arith(lex, state, OpCode::BinaryAnd, exp1, exp2, line)?,
+        BinaryOp::BinaryOr => code_arith(lex, state, OpCode::BinaryOr, exp1, exp2, line)?,
+        BinaryOp::BinaryXor => code_arith(lex, state, OpCode::BinaryXor, exp1, exp2, line)?,
+        BinaryOp::Shl => code_arith(lex, state, OpCode::Shl, exp1, exp2, line)?,
+        BinaryOp::Shr => code_arith(lex, state, OpCode::Shr, exp1, exp2, line)?,
         BinaryOp::Eq => code_comp(lex, state, OpCode::Eq, 1, exp1, exp2)?,
         BinaryOp::Ne => code_comp(lex, state, OpCode::Eq, 0, exp1, exp2)?,
         BinaryOp::Lt => code_comp(lex, state, OpCode::Lt, 1, exp1, exp2)?,
@@ -1039,64 +1094,175 @@ fn code_arith<T>(
     exp2: &mut ExpressionDesc,
     line: usize,
 ) -> Result<(), LuaError> {
-    if const_folding(op, exp1, exp2) {
-        return Ok(());
+    if !const_folding(op, exp1, exp2) {
+        code_bin_expval(lex, state, op, exp1, exp2, line)?;
     }
-    let o2 = if op != OpCode::UnaryMinus && op != OpCode::Len {
-        exp2rk(lex, state, exp2)?
-    } else {
-        0
-    };
-    let o1 = exp2rk(lex, state, exp1)?;
-    if o1 > o2 {
-        free_exp(lex, exp1);
-        free_exp(lex, exp2);
-    } else {
-        free_exp(lex, exp2);
-        free_exp(lex, exp1);
-    }
-    exp1.info = code_abc(lex, state, op as u32, 0, o1 as i32, o2 as i32)? as i32;
-    exp1.k = ExpressionKind::Relocable;
+    Ok(())
+}
+
+/// Emit code for binary expressions that "produce values"
+/// (everything but logical operators 'and'/'or' and comparison
+/// operators).
+/// Expression to produce final result will be encoded in 'e1'.
+/// Because 'luaK_exp2RK' can free registers, its calls must be
+/// in "stack order" (that is, first on 'e2', which may have more
+/// recent registers to be released).
+fn code_bin_expval<T>(
+    lex: &mut LexState<T>,
+    state: &mut LuaState,
+    op: OpCode,
+    exp1: &mut ExpressionDesc,
+    exp2: &mut ExpressionDesc,
+    line: usize,
+) -> Result<(), LuaError> {
+    let rk1 = exp2rk(lex, state, exp1)? as i32;
+    let rk2 = exp2rk(lex, state, exp2)? as i32;
+    free_exps(lex, exp1, exp2);
+    exp1.init(
+        ExpressionKind::Relocable,
+        code_abc(lex, state, op as u32, 0, rk1, rk2)? as i32,
+    );
     fix_line(lex, state, line);
     Ok(())
 }
 
-fn const_folding(op: OpCode, exp1: &mut ExpressionDesc, exp2: &mut ExpressionDesc) -> bool {
-    if !exp1.is_numeral() || !exp2.is_numeral() {
-        return false;
-    }
-    let v1 = exp1.nval;
-    let v2 = exp2.nval;
-    let r = match op {
-        OpCode::Add => v1 + v2,
-        OpCode::Sub => v1 - v2,
-        OpCode::Mul => v1 * v2,
-        OpCode::Div => {
-            if v2 == 0.0 {
-                return false; // do not attempt to divide by 0
-            } else {
-                v1 / v2
-            }
-        }
-        OpCode::Mod => {
-            if v2 == 0.0 {
-                return false;
-            } else {
-                v1 % v2
-            }
-        }
-        OpCode::Pow => v1.powf(v2),
-        OpCode::UnaryMinus => -v1,
-        OpCode::Len => {
-            return false;
-        } // no constant folding for `len`
-        _ => unreachable!(),
+/// Free registers used by expressions 'e1' and 'e2' (if any) in proper
+/// order.
+fn free_exps<T>(lex: &mut LexState<T>, exp1: &mut ExpressionDesc, exp2: &mut ExpressionDesc) {
+    let r1 = if exp1.k == ExpressionKind::NonRelocable {
+        exp1.info
+    } else {
+        -1
     };
-    if r.is_nan() {
-        return false;
+    let r2 = if exp2.k == ExpressionKind::NonRelocable {
+        exp2.info
+    } else {
+        -1
+    };
+    if r1 > r2 {
+        free_exp(lex, exp1);
+        free_exp(lex, exp2);
+    } else {
+        free_exp(lex, exp2);
+        free_exp(lex, exp1);
     }
-    exp1.nval = r;
+}
+
+/// Try to "constant-fold" an operation; return 1 iff successful.
+/// (In this case, 'e1' has the final result.)
+fn const_folding(op: OpCode, exp1: &mut ExpressionDesc, exp2: &mut ExpressionDesc) -> bool {
+    let mut v1 = TValue::Nil;
+    let mut v2 = TValue::Nil;
+    if !exp1.to_numeral(&mut v1) || !exp2.to_numeral(&mut v2) || !is_op_valid(op, &v1, &v2) {
+        return false; // non-numeric operands or not safe to fold
+    }
+    let res = arith(op, &v1, &v2);
+    if res.is_float() {
+        let v = res.get_float_value();
+        if v.is_nan() || v == 0.0 {
+            // folds neither NaN nor 0.0 (to avoid problems with -0.0)
+            return false;
+        }
+        exp1.k = ExpressionKind::FloatConstant;
+        exp1.nval = v;
+    } else if res.is_integer() {
+        let i = res.get_integer_value();
+        exp1.k = ExpressionKind::IntegerConstant;
+        exp1.ival = i;
+    } else {
+        unreachable!()
+    }
     true
+}
+
+pub(crate) fn arith(op: OpCode, v1: &TValue, v2: &TValue) -> TValue {
+    match op {
+        OpCode::BinaryAnd
+        | OpCode::BinaryOr
+        | OpCode::BinaryXor
+        | OpCode::Shl
+        | OpCode::Shr
+        | OpCode::BinaryNot => {
+            // operate only on integer
+            if let (Ok(i1), Ok(i2)) = (v1.into_integer(), v2.into_integer()) {
+                return TValue::Integer(int_arith(op, i1, i2));
+            }
+        }
+        OpCode::Div | OpCode::Pow => {
+            // operate only on floats
+            if let (Ok(f1), Ok(f2)) = (v1.into_float(), v2.into_float()) {
+                return TValue::Float(num_arith(op, f1, f2));
+            }
+        }
+        _ => {
+            if v1.is_integer() && v2.is_integer() {
+                return TValue::Integer(int_arith(
+                    op,
+                    v1.get_integer_value(),
+                    v2.get_integer_value(),
+                ));
+            } else if let (Ok(f1), Ok(f2)) = (v1.into_float(), v2.into_float()) {
+                return TValue::Float(num_arith(op, f1, f2));
+            }
+        }
+    }
+    // TODO metamethods
+    todo!()
+}
+
+fn int_arith(op: OpCode, i1: LuaInteger, i2: LuaInteger) -> LuaInteger {
+    match op {
+        OpCode::Add => i1 + i2,
+        OpCode::Sub => i1 - i2,
+        OpCode::Mul => i1 * i2,
+        OpCode::Mod => i1 % i2,
+        OpCode::IntegerDiv => i1 / i2,
+        OpCode::BinaryAnd => i1 & i2,
+        OpCode::BinaryOr => i1 | i2,
+        OpCode::BinaryXor => i1 ^ i2,
+        OpCode::Shl => i1 << i2,
+        OpCode::Shr => i1 >> i2,
+        OpCode::UnaryMinus => -i1,
+        OpCode::BinaryNot => !i1,
+        _ => 0,
+    }
+}
+
+fn num_arith(op: OpCode, i1: LuaFloat, i2: LuaFloat) -> LuaFloat {
+    match op {
+        OpCode::Add => i1 + i2,
+        OpCode::Sub => i1 - i2,
+        OpCode::Mul => i1 * i2,
+        OpCode::Mod => i1 % i2,
+        OpCode::Div => i1 / i2,
+        OpCode::Pow => i1.powf(i2),
+        OpCode::IntegerDiv => (i1 / i2).floor(),
+        OpCode::UnaryMinus => -i1,
+        _ => 0.0,
+    }
+}
+
+/// Return false if folding can raise an error.
+/// Bitwise operations need operands convertible to integers; division
+/// operations cannot have 0 as divisor.
+fn is_op_valid(op: OpCode, v1: &TValue, v2: &TValue) -> bool {
+    match op {
+        OpCode::BinaryAnd
+        | OpCode::BinaryOr
+        | OpCode::BinaryXor
+        | OpCode::Shl
+        | OpCode::Shr
+        | OpCode::BinaryNot => {
+            v1.into_integer().is_ok() && v2.into_integer().is_ok()
+            // conversion errors
+        }
+        OpCode::Div | OpCode::IntegerDiv | OpCode::Mod => match v1.into_integer() {
+            Ok(i) if i == 0 => false,
+            Ok(_) => true,
+            Err(_) => false,
+        },
+        _ => true, // everything else is valid
+    }
 }
 
 pub(crate) fn concat<T>(

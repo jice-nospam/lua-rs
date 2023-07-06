@@ -11,7 +11,7 @@ pub(crate) fn error_msg(_state: &mut LuaState) -> Result<(), LuaError> {
 }
 
 pub(crate) fn concat_error(state: &mut LuaState, p1: isize, p2: isize) -> Result<(), LuaError> {
-    let perr = if state.index2adr(p1).is_string() || state.index2adr(p1).is_number() {
+    let perr = if state.index2adr(p1).is_string() || state.index2adr(p1).is_float() {
         p2
     } else {
         p1
@@ -40,15 +40,6 @@ pub(crate) fn type_error(state: &mut LuaState, id: StkId, operation: &str) -> Re
     }
 }
 
-pub(crate) fn arith_error(state: &mut LuaState, p1: usize, p2: usize) -> Result<(), LuaError> {
-    let badid = if LuaState::to_number(&mut state.stack, p1, None).is_none() {
-        p1
-    } else {
-        p2
-    };
-    type_error(state, badid, "perform arithmetic on")
-}
-
 fn get_obj_name(state: &mut LuaState, _id: usize) -> (Option<String>, Option<String>) {
     let ci = &state.base_ci[state.ci];
     let funcvalue = &state.stack[ci.func];
@@ -66,12 +57,16 @@ fn get_obj_name(state: &mut LuaState, _id: usize) -> (Option<String>, Option<Str
     }
 }
 
-pub(crate) fn order_error(state: &mut LuaState, rkb: &TValue, rkc: &TValue) -> Result<(), LuaError> {
-    let t1=rkb.get_type_name();
-    let t2=rkc.get_type_name();
+pub(crate) fn order_error(
+    state: &mut LuaState,
+    rkb: &TValue,
+    rkc: &TValue,
+) -> Result<(), LuaError> {
+    let t1 = rkb.get_type_name();
+    let t2 = rkc.get_type_name();
     if t1 == t2 {
         state.run_error(&format!("attempt to compare two {} values", t1))
     } else {
-        state.run_error(&format!("attempt to compare {} with {}",t1,t2))
+        state.run_error(&format!("attempt to compare {} with {}", t1, t2))
     }
 }

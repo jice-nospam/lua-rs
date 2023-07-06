@@ -7,7 +7,7 @@ use crate::{
     parser::FuncState,
     state::LuaState,
     zio::Zio,
-    LuaNumber,
+    LuaFloat, LuaInteger,
 };
 
 const FIRST_RESERVED: isize = 257;
@@ -41,15 +41,19 @@ pub enum Reserved {
     Until,
     While,
     // other terminal symbols
+    IntDiv,  // '//'
     Concat,  // '..'
     Dots,    // '...'
     Eq,      // '=='
     Ge,      // '>='
     Le,      // '<='
     Ne,      // '~='
+    Shl,     // '<<'
+    Shr,     // '>>'
     DbColon, // '::'
     Eos,
-    Number,
+    Float,
+    Integer,
     Name,
     String,
 }
@@ -81,15 +85,19 @@ impl TryFrom<u32> for Reserved {
             x if Reserved::True as u32 == x => Ok(Reserved::True),
             x if Reserved::Until as u32 == x => Ok(Reserved::Until),
             x if Reserved::While as u32 == x => Ok(Reserved::While),
+            x if Reserved::IntDiv as u32 == x => Ok(Reserved::IntDiv),
             x if Reserved::Concat as u32 == x => Ok(Reserved::Concat),
             x if Reserved::Dots as u32 == x => Ok(Reserved::Dots),
             x if Reserved::Eq as u32 == x => Ok(Reserved::Eq),
             x if Reserved::Ge as u32 == x => Ok(Reserved::Ge),
             x if Reserved::Le as u32 == x => Ok(Reserved::Le),
             x if Reserved::Ne as u32 == x => Ok(Reserved::Ne),
+            x if Reserved::Shl as u32 == x => Ok(Reserved::Shl),
+            x if Reserved::Shr as u32 == x => Ok(Reserved::Shr),
             x if Reserved::DbColon as u32 == x => Ok(Reserved::DbColon),
             x if Reserved::Eos as u32 == x => Ok(Reserved::Eos),
-            x if Reserved::Number as u32 == x => Ok(Reserved::Number),
+            x if Reserved::Float as u32 == x => Ok(Reserved::Float),
+            x if Reserved::Integer as u32 == x => Ok(Reserved::Integer),
             x if Reserved::Name as u32 == x => Ok(Reserved::Name),
             x if Reserved::String as u32 == x => Ok(Reserved::String),
 
@@ -98,17 +106,52 @@ impl TryFrom<u32> for Reserved {
     }
 }
 
-const TOKEN_NAMES: [&str; 33] = [
-    "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "goto", "if", "in",
-    "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while", "..", "...",
-    "==", ">=", "<=", "~=", "::", "<eof>", "<number>", "<name>", "<string>",
+const TOKEN_NAMES: [&str; 37] = [
+    "and",
+    "break",
+    "do",
+    "else",
+    "elseif",
+    "end",
+    "false",
+    "for",
+    "function",
+    "goto",
+    "if",
+    "in",
+    "local",
+    "nil",
+    "not",
+    "or",
+    "repeat",
+    "return",
+    "then",
+    "true",
+    "until",
+    "while",
+    "//",
+    "..",
+    "...",
+    "==",
+    ">=",
+    "<=",
+    "~=",
+    "<<",
+    ">>",
+    "::",
+    "<eof>",
+    "<number>",
+    "<integer>",
+    "<name>",
+    "<string>",
 ];
 
 const NUM_RESERVED: isize = Reserved::While as isize - FIRST_RESERVED + 1;
 
 #[derive(Clone)]
 pub enum SemInfo {
-    Number(LuaNumber),
+    Number(LuaFloat),
+    Integer(LuaInteger),
     String(String),
 }
 
@@ -152,10 +195,16 @@ impl Token {
             seminfo: SemInfo::String(value.to_owned()),
         }
     }
-    pub fn new_number(value: LuaNumber) -> Self {
+    pub fn new_number(value: LuaFloat) -> Self {
         Self {
-            token: Reserved::Number as u32,
+            token: Reserved::Float as u32,
             seminfo: SemInfo::Number(value),
+        }
+    }
+    pub fn new_integer(value: LuaInteger) -> Self {
+        Self {
+            token: Reserved::Integer as u32,
+            seminfo: SemInfo::Integer(value),
         }
     }
 }
@@ -214,8 +263,6 @@ pub struct LexState<T> {
     pub source: String,
     // environment variable name
     pub envn: String,
-    /// locale decimal point
-    pub decpoint: String,
     /// func states
     pub vfs: Vec<FuncState>,
 }
@@ -233,7 +280,6 @@ impl<T> LexState<T> {
             dyd: DynData::default(),
             source: source.to_owned(),
             envn: "_ENV".to_owned(),
-            decpoint: ".".to_owned(),
             vfs: vec![FuncState::new()],
         }
     }
@@ -464,8 +510,7 @@ impl<T> LexState<T> {
                     } else if !self.is_current_digit() {
                         return Ok(Some(Token::new('.')));
                     } else {
-                        let value = self.read_numeral(state)?;
-                        return Ok(Some(Token::new_number(value)));
+                        return self.read_numeral(state).map(|x| Some(x));
                     }
                 }
                 Some(c) => {
@@ -473,8 +518,7 @@ impl<T> LexState<T> {
                         self.next_char(state);
                         continue;
                     } else if self.is_current_digit() {
-                        let value = self.read_numeral(state)?;
-                        return Ok(Some(Token::new_number(value)));
+                        return self.read_numeral(state).map(|x| Some(x));
                     } else if self.is_current_alphabetic() || self.is_current('_') {
                         // identifier or reserved word
                         self.save_and_next(state);
@@ -567,9 +611,10 @@ impl<T> LexState<T> {
 
     pub fn token_2_txt(&self, t: u32) -> String {
         match t.try_into() {
-            Ok(Reserved::Name) | Ok(Reserved::String) | Ok(Reserved::Number) => {
-                self.buff.iter().collect::<String>()
-            }
+            Ok(Reserved::Name)
+            | Ok(Reserved::String)
+            | Ok(Reserved::Float)
+            | Ok(Reserved::Integer) => self.buff.iter().collect::<String>(),
             Ok(_) => TOKEN_NAMES[t as usize - FIRST_RESERVED as usize].to_owned(),
             Err(()) => {
                 let c = char::from_u32(t).unwrap();
@@ -788,7 +833,7 @@ impl<T> LexState<T> {
         Ok(())
     }
 
-    fn read_numeral(&mut self, state: &mut LuaState) -> Result<f64, LuaError> {
+    fn read_numeral(&mut self, state: &mut LuaState) -> Result<Token, LuaError> {
         debug_assert!(self.is_current_digit());
         let first = self.current.unwrap();
         self.save_and_next(state);
@@ -809,13 +854,23 @@ impl<T> LexState<T> {
             }
         }
         let svalue = self.buff.iter().cloned().collect::<String>();
-        // follow locale for decimal point
-        let svalue = svalue.replace('.', &self.decpoint);
-        str2d(&svalue).ok_or_else(|| {
-            self.lex_error::<()>(state, "malformed number", Some(Reserved::Number as u32))
-                .err()
-                .unwrap()
-        })
+        match str2d(&svalue) {
+            // TODO 1.0 should be float
+            Some(val) => {
+                if val.fract() == 0.0 {
+                    Ok(Token::new_integer(val as LuaInteger))
+                } else {
+                    Ok(Token::new_number(val))
+                }
+            }
+            None => {
+                return self.lex_error::<Token>(
+                    state,
+                    "malformed number",
+                    Some(Reserved::Float as u32),
+                );
+            }
+        }
     }
 
     pub(crate) fn is_token(&self, arg: u32) -> bool {

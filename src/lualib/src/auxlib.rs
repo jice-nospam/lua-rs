@@ -5,7 +5,7 @@ use crate::{
     luaH::TableRef,
     object::TValue,
     state::LuaState,
-    LuaInteger, LuaNumber, LUA_MULTRET, LUA_REGISTRYINDEX, LuaRustFunction, 
+    LuaFloat, LuaInteger, LuaRustFunction, LUA_MULTRET, LUA_REGISTRYINDEX,
 };
 
 pub use crate::libs::*;
@@ -58,12 +58,25 @@ pub fn typename(s: &LuaState, index: isize) -> String {
     s.index2adr(index).get_type_name().to_owned()
 }
 
-pub fn check_number(s: &mut LuaState, index: isize) -> Result<LuaNumber, ()> {
-    let value = api::to_number(s, index);
-    if value == 0.0 && !api::is_number(s, index) {
-        type_error(s, index, "number").map_err(|_| ())?;
+pub fn check_number(s: &mut LuaState, index: isize) -> Result<LuaFloat, ()> {
+    match api::to_number(s, index) {
+        None => {
+            type_error(s, index, "number").map_err(|_| ())?;
+            unreachable!()
+        }
+        Some(value) => Ok(value),
     }
-    Ok(value)
+}
+
+pub fn check_numeral(s: &mut LuaState, index: isize) -> Result<LuaFloat, ()> {
+    match s.index2adr(index) {
+        TValue::Float(n) => Ok(n),
+        TValue::Integer(i) => Ok(i as LuaFloat),
+        _ => {
+            type_error(s, index, "number").map_err(|_| ())?;
+            unreachable!()
+        }
+    }
 }
 
 pub fn check_boolean(s: &mut LuaState, index: isize) -> Result<bool, ()> {
@@ -72,11 +85,13 @@ pub fn check_boolean(s: &mut LuaState, index: isize) -> Result<bool, ()> {
 }
 
 pub fn check_integer(s: &mut LuaState, index: isize) -> Result<LuaInteger, ()> {
-    let value = api::to_number(s, index);
-    if value == 0.0 && !api::is_number(s, index) {
-        type_error(s, index, "number").map_err(|_| ())?;
+    match api::to_integer(s, index) {
+        None => {
+            arg_error(s, index, "number has no integer representation").map_err(|_| ())?;
+            unreachable!()
+        }
+        Some(value) => Ok(value),
     }
-    Ok(value as LuaInteger)
 }
 
 pub fn check_string(s: &mut LuaState, index: isize) -> Result<String, ()> {
@@ -121,11 +136,11 @@ pub(crate) fn arg_error(
     Err(LuaError::RuntimeError)
 }
 
-pub fn opt_int(state: &mut LuaState, narg: i32) -> Option<i32> {
-    check_integer(state, narg as isize).ok().map(|n| n as i32)
+pub fn opt_integer(state: &mut LuaState, narg: i32) -> Option<LuaInteger> {
+    check_integer(state, narg as isize).ok()
 }
 
-pub fn opt_number(state: &mut LuaState, narg: i32) -> Option<LuaNumber> {
+pub fn opt_number(state: &mut LuaState, narg: i32) -> Option<LuaFloat> {
     check_number(state, narg as isize).ok()
 }
 
@@ -166,12 +181,13 @@ pub fn set_funcs(state: &mut LuaState, funcs: &[LibReg], nup: i32) {
 }
 
 pub fn get_meta_field(s: &mut LuaState, obj: i32, event: &str) -> bool {
-    if ! api::get_meta_table(s, obj) { // no metatable
+    if !api::get_meta_table(s, obj) {
+        // no metatable
         false
     } else {
         api::push_string(s, event);
         api::raw_get(s, -2);
-        if api::is_nil(s,-1){
+        if api::is_nil(s, -1) {
             api::pop(s, 2); // remove metatable and metafield
             false
         } else {
@@ -187,17 +203,18 @@ pub fn new_lib(state: &mut LuaState, funcs: &[LibReg]) {
     set_funcs(state, funcs, 0);
 }
 
-///  If the registry already has the key tname, returns false. 
-/// Otherwise, creates a new table to be used as a metatable for userdata, 
+///  If the registry already has the key tname, returns false.
+/// Otherwise, creates a new table to be used as a metatable for userdata,
 /// adds it to the registry with key tname, and returns true.
-/// In both cases pushes onto the stack the final value associated with tname 
-/// in the registry. 
+/// In both cases pushes onto the stack the final value associated with tname
+/// in the registry.
 pub(crate) fn new_metatable(s: &mut LuaState, tname: &str) -> bool {
     get_meta_table(s, tname); // try to get metatable
-    if ! api::is_nil(s, -1) { // name already in use? 
+    if !api::is_nil(s, -1) {
+        // name already in use?
         false // leave previous value on top, but return false
     } else {
-        api::pop(s,1);
+        api::pop(s, 1);
         api::new_table(s); // create metatable
         api::push_value(s, -1);
         api::set_field(s, LUA_REGISTRYINDEX, tname); // registry.name = metatable
@@ -210,19 +227,24 @@ fn get_meta_table(s: &mut LuaState, tname: &str) {
     api::get_field(s, LUA_REGISTRYINDEX, tname);
 }
 
-/// Calls function openf with string modname as an argument 
-/// and sets the call result in package.loaded[modname], 
+/// Calls function openf with string modname as an argument
+/// and sets the call result in package.loaded[modname],
 /// as if that function has been called through require.
 /// If glb is true, also stores the result into global modname.
-/// Leaves a copy of that result on the stack. 
-pub fn requiref(s: &mut LuaState, modname: &str, openf: LuaRustFunction, glb: bool) -> Result<(),LuaError>{
+/// Leaves a copy of that result on the stack.
+pub fn requiref(
+    s: &mut LuaState,
+    modname: &str,
+    openf: LuaRustFunction,
+    glb: bool,
+) -> Result<(), LuaError> {
     api::push_rust_function(s, openf, 0);
     api::push_string(s, modname); // argument to open function
-    api::call(s,1,1)?; // open module
+    api::call(s, 1, 1)?; // open module
     get_sub_table(s, LUA_REGISTRYINDEX, "_LOADED");
     api::push_value(s, -2); // make copy of module (call result)
     api::set_field(s, -2, modname); // _LOADED[modname] = module
-    api::pop(s,1); // remove _LOADED table
+    api::pop(s, 1); // remove _LOADED table
     if glb {
         api::push_value(s, -1); // copy of 'mod'
         api::set_global(s, modname); // _G[modname] = module
@@ -230,20 +252,28 @@ pub fn requiref(s: &mut LuaState, modname: &str, openf: LuaRustFunction, glb: bo
     Ok(())
 }
 
-/// Ensures that the value t[fname], where t is the value at index idx, 
-/// is a table, and pushes that table onto the stack. 
-/// Returns true if it finds a previous table there 
-/// and false if it creates a new table. 
+/// Ensures that the value t[fname], where t is the value at index idx,
+/// is a table, and pushes that table onto the stack.
+/// Returns true if it finds a previous table there
+/// and false if it creates a new table.
 pub fn get_sub_table(s: &mut LuaState, idx: isize, fname: &str) -> bool {
     api::get_field(s, idx, fname);
-    if api::is_table(s,-1) {
+    if api::is_table(s, -1) {
         true
     } else {
-        api::pop(s,1);
-        let idx=api::abs_index(s,idx);
+        api::pop(s, 1);
+        let idx = api::abs_index(s, idx);
         api::new_table(s);
         api::push_value(s, -1);
         api::set_field(s, idx, fname);
         false
+    }
+}
+
+pub fn check_any(s: &mut LuaState, index: isize) -> Result<(), LuaError> {
+    if s.is_index_valid(index) {
+        Ok(())
+    } else {
+        arg_error(s, index, "value expected")
     }
 }

@@ -1,6 +1,6 @@
 //! Standard library for string operations and pattern-matching
 
-use crate::{luaL, state::LuaState, api};
+use crate::{api, luaL, state::LuaState};
 
 use super::LibReg;
 
@@ -81,7 +81,7 @@ fn create_metatable(state: &mut LuaState) {
     api::pop(state, 1); // pop dummy string
     api::push_value(state, -2); // string library
     api::set_field(state, -2, "__index"); // ...is the __index metamethod
-    api::pop(state,1); // pop metatable
+    api::pop(state, 1); // pop metatable
 }
 
 pub fn str_byte(_state: &mut LuaState) -> Result<i32, ()> {
@@ -92,8 +92,8 @@ pub fn str_byte(_state: &mut LuaState) -> Result<i32, ()> {
 /// Returns a string with length equal to the number of arguments, in which each character has the internal numerical code equal to its corresponding argument.
 /// Note that numerical codes are not necessarily portable across platforms
 pub fn str_char(state: &mut LuaState) -> Result<i32, ()> {
-    let n=api::get_top(state) as isize; // number of arguments
-    let mut s=String::new();
+    let n = api::get_top(state) as isize; // number of arguments
+    let mut s = String::new();
     for i in 1..=n {
         let c = luaL::check_integer(state, i).map_err(|_| ())?;
         match char::from_u32(c as u32) {
@@ -239,7 +239,7 @@ mod tests {
     fn string_format_d() {
         let mut state = luaL::newstate();
         luaL::open_libs(&mut state).unwrap();
-        luaL::dostring(&mut state, "s=string.format('%d',14.3)").unwrap();
+        luaL::dostring(&mut state, "s=string.format('%d',14)").unwrap();
 
         api::get_global(&mut state, "s");
         assert_eq!(state.stack.last().unwrap(), &TValue::from("14"));

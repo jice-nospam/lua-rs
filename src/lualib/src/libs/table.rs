@@ -1,6 +1,6 @@
 //! Library for Table Manipulation
 
-use crate::{luaL, state::LuaState, api};
+use crate::{api, luaL, state::LuaState, LuaInteger};
 
 use super::LibReg;
 
@@ -33,9 +33,9 @@ const TAB_FUNCS: [LibReg; 6] = [
 
 pub fn tunpack(state: &mut LuaState) -> Result<i32, ()> {
     luaL::check_table(state, 1).map_err(|_| ())?;
-    let mut i = luaL::opt_int(state, 2).unwrap_or(1);
+    let mut i = luaL::opt_integer(state, 2).unwrap_or(1);
     let len = luaL::obj_len(state, 1);
-    let e = luaL::opt_int(state, 3).unwrap_or(len as i32);
+    let e = luaL::opt_integer(state, 3).unwrap_or(len as LuaInteger);
     if i > e {
         return Ok(0); // empty range
     }
@@ -43,12 +43,12 @@ pub fn tunpack(state: &mut LuaState) -> Result<i32, ()> {
     if n <= 0 {
         return Ok(0); // empty range
     }
-    api::raw_get_i(state, 1, i);
+    api::raw_get_i(state, 1, i as usize);
     while i < e {
         i += 1;
-        api::raw_get_i(state, 1, i);
+        api::raw_get_i(state, 1, i as usize);
     }
-    Ok(n)
+    Ok(n as i32)
 }
 
 pub fn tconcat(_state: &mut LuaState) -> Result<i32, ()> {
@@ -81,8 +81,8 @@ mod tests {
         luaL::open_libs(&mut state).unwrap();
         luaL::dostring(&mut state, "a,b=table.unpack({3,5})").unwrap();
         api::get_global(&mut state, "a");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(3.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(3));
         api::get_global(&mut state, "b");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(5.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(5));
     }
 }

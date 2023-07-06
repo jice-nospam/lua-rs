@@ -1,8 +1,8 @@
 //! Standard I/O (and system) library
 
-use std::io::{Write, stdout};
+use std::io::{stdout, Write};
 
-use crate::{luaL, state::LuaState, is_number, api};
+use crate::{api, luaL, state::LuaState};
 
 use super::LibReg;
 
@@ -93,11 +93,11 @@ const FILE_FUNCS: [LibReg; 9] = [
 ];
 
 fn create_metatable(state: &mut LuaState) {
-    luaL::new_metatable(state,"FILE"); // create metatable for file handles
+    luaL::new_metatable(state, "FILE"); // create metatable for file handles
     api::push_value(state, -1); // push metatable
     api::set_field(state, -2, "__index"); // metatable.__index = metatable
     luaL::set_funcs(state, &FILE_FUNCS, 0); // add file methods to new metatable
-    api::pop(state,1); // pop new metatable
+    api::pop(state, 1); // pop new metatable
 }
 
 pub fn io_close(_state: &mut LuaState) -> Result<i32, ()> {
@@ -131,26 +131,22 @@ pub fn io_type(_state: &mut LuaState) -> Result<i32, ()> {
     todo!();
 }
 
-fn g_write(state:&mut LuaState, out: &mut dyn Write, arg: isize) -> i32 {
+fn g_write(state: &mut LuaState, out: &mut dyn Write, arg: isize) -> i32 {
     let mut nargs = api::get_top(state) as isize; // number of arguments
-    //let mut status = true;
-    // TODO handle formatting errors
-    let mut arg=arg;
+                                                  //let mut status = true;
+                                                  // TODO handle formatting errors
+    let mut arg = arg;
     while nargs > 0 {
-        if is_number(state, arg) {
-            write!(out, "{}",api::to_number(state,arg)).unwrap();
-        } else {
-            write!(out, "{}", state.index2adr(arg)).unwrap();
-        }
-        arg+=1;
-        nargs-=1;
+        write!(out, "{}", state.index2adr(arg)).unwrap();
+        arg += 1;
+        nargs -= 1;
     }
-    api::push_boolean(state,true);
+    api::push_boolean(state, true);
     1
 }
 
 pub fn io_write(state: &mut LuaState) -> Result<i32, ()> {
-    Ok(g_write(state,&mut stdout(),1))
+    Ok(g_write(state, &mut stdout(), 1))
 }
 pub fn f_flush(_state: &mut LuaState) -> Result<i32, ()> {
     todo!();
@@ -176,7 +172,6 @@ pub fn io_gc(_state: &mut LuaState) -> Result<i32, ()> {
 pub fn io_tostring(_state: &mut LuaState) -> Result<i32, ()> {
     todo!();
 }
-
 
 pub fn lib_open_io(state: &mut LuaState) -> Result<i32, ()> {
     luaL::new_lib(state, &IO_FUNCS);

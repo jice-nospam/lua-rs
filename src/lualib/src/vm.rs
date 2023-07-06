@@ -7,71 +7,18 @@ use crate::{
     api::LuaError,
     luaD::PrecallStatus,
     luaG,
+    luaK::arith,
     object::{Closure, LClosure, StkId, TValue},
     opcodes::{
-        get_arg_a, get_arg_ax, get_arg_b, get_arg_bx, get_arg_c, get_arg_sbx, get_opcode, rk_is_k,
-        OpCode, BIT_RK, LFIELDS_PER_FLUSH,
+        get_arg_a, get_arg_ax, get_arg_b, get_arg_bx, get_arg_c, get_arg_sbx, get_opcode, OpCode,
+        LFIELDS_PER_FLUSH,
     },
-    state::{LuaState, CIST_LUA, CIST_REENTRY, CIST_TAIL},
-    LuaNumber, LUA_MULTRET,
+    state::{LuaState, CIST_FRESH, CIST_LUA, CIST_TAIL},
+    LuaInteger, LUA_MULTRET,
 };
 
 #[cfg(feature = "debug_logs")]
 use crate::{limits::Instruction, opcodes::OPCODE_NAME};
-
-macro_rules! arith_op {
-    ($op: tt, $opcode: expr, $protoid: expr, $state: expr,$i:expr,$base:expr,$ra: expr,$pc:expr) => {
-        {
-            let b=get_arg_b($i);
-            let rbi = ($base + b) as usize;
-            let rb = if rk_is_k(b) {
-                $state.get_lua_constant($protoid, (b&!BIT_RK) as usize)
-            } else {
-                $state.stack[rbi].clone()
-            };
-            let c=get_arg_c($i);
-            let rci = ($base + c) as usize;
-            let rc = if rk_is_k(c) {
-                $state.get_lua_constant($protoid,(c&!BIT_RK) as usize)
-            } else {
-                $state.stack[rci].clone()
-            };
-            if rb.is_number() && rc.is_number() {
-                let val = rb.get_number_value() $op rc.get_number_value();
-                $state.set_or_push($ra as usize, TValue::Number(val));
-            } else {
-                arithv($state, $ra, rbi, rci, rb, rc, $opcode)?;
-                $base = $state.base_ci[$state.ci].base as u32;
-            }
-        }
-    }
-}
-
-macro_rules! arith_func {
-    ($func: tt, $opcode: expr, $protoid: expr, $state: expr,$i:expr,$base:expr,$ra: expr,$pc:expr) => {{
-        let b = get_arg_b($i);
-        let rbi = ($base + b) as usize;
-        let rb = if rk_is_k(b) {
-            $state.get_lua_constant($protoid, (b & !BIT_RK) as usize)
-        } else {
-            $state.stack[rbi].clone()
-        };
-        let c = get_arg_c($i);
-        let rci = ($base + c) as usize;
-        let rc = if rk_is_k(c) {
-            $state.get_lua_constant($protoid, (c & !BIT_RK) as usize)
-        } else {
-            $state.stack[rci].clone()
-        };
-        if rb.is_number() && rc.is_number() {
-            let val = rb.get_number_value().$func(rc.get_number_value());
-            $state.stack[$ra as usize] = TValue::Number(val);
-        } else {
-            arith($state, $ra, rbi, rci, $opcode)?;
-            $base = $state.base_ci[$state.ci].base as u32;
-        }
-    }};
-}
 
 impl LuaState {
     #[cfg(feature = "debug_logs")]
@@ -84,6 +31,7 @@ impl LuaState {
     }
 
     pub(crate) fn vexecute(&mut self) -> Result<(), LuaError> {
+        self.base_ci[self.ci].call_status |= CIST_FRESH;
         'new_frame: loop {
             let func = self.base_ci[self.ci].func;
             let protoid = self.get_lua_closure_protoid(func);
@@ -104,6 +52,41 @@ impl LuaState {
                 let ra = base + get_arg_a(i);
                 debug_assert!(base == self.base_ci[self.ci].base as u32);
                 match get_opcode(i) {
+                    OpCode::BinaryAnd => {
+                        let rb = self.get_rkb(i, base, protoid);
+                        let rc = self.get_rkc(i, base, protoid);
+                        self.set_stack_from_value(ra as usize, arith(OpCode::BinaryAnd, &rb, &rc));
+                    }
+                    OpCode::BinaryOr => {
+                        let rb = self.get_rkb(i, base, protoid);
+                        let rc = self.get_rkc(i, base, protoid);
+                        self.set_stack_from_value(ra as usize, arith(OpCode::BinaryOr, &rb, &rc));
+                    }
+                    OpCode::BinaryXor => {
+                        let rb = self.get_rkb(i, base, protoid);
+                        let rc = self.get_rkc(i, base, protoid);
+                        self.set_stack_from_value(ra as usize, arith(OpCode::BinaryXor, &rb, &rc));
+                    }
+                    OpCode::Shl => {
+                        let rb = self.get_rkb(i, base, protoid);
+                        let rc = self.get_rkc(i, base, protoid);
+                        self.set_stack_from_value(ra as usize, arith(OpCode::Shl, &rb, &rc));
+                    }
+                    OpCode::Shr => {
+                        let rb = self.get_rkb(i, base, protoid);
+                        let rc = self.get_rkc(i, base, protoid);
+                        self.set_stack_from_value(ra as usize, arith(OpCode::Shr, &rb, &rc));
+                    }
+                    OpCode::IntegerDiv => {
+                        let rb = self.get_rkb(i, base, protoid);
+                        let rc = self.get_rkc(i, base, protoid);
+                        self.set_stack_from_value(ra as usize, arith(OpCode::IntegerDiv, &rb, &rc));
+                    }
+                    OpCode::BinaryNot => {
+                        let rb = get_rb(base, i);
+                        let rb = &self.stack[rb];
+                        self.set_stack_from_value(ra as usize, arith(OpCode::BinaryNot, rb, rb));
+                    }
                     OpCode::Move => {
                         let rb = get_rb(base, i);
                         let rai = ra as usize;
@@ -194,23 +177,40 @@ impl LuaState {
                         Self::get_tablev(&mut self.stack, rb, &key, Some(ra as usize));
                         base = self.base_ci[self.ci].base as u32;
                     }
-                    OpCode::Add => arith_op!(+,OpCode::Add,protoid,self,i,base,ra,pc),
-                    OpCode::Sub => arith_op!(-,OpCode::Sub,protoid,self,i,base,ra,pc),
-                    OpCode::Mul => arith_op!(*,OpCode::Mul,protoid,self,i,base,ra,pc),
-                    OpCode::Div => arith_op!(/,OpCode::Div,protoid,self,i,base,ra,pc),
-                    OpCode::Mod => arith_op!(%,OpCode::Mod,protoid,self,i,base,ra,pc),
-                    OpCode::Pow => arith_func!(powf, OpCode::Pow, protoid, self, i, base, ra, pc),
+                    OpCode::Add => {
+                        let rb = self.get_rkb(i, base, protoid);
+                        let rc = self.get_rkc(i, base, protoid);
+                        self.set_stack_from_value(ra as usize, arith(OpCode::Add, &rb, &rc));
+                    }
+                    OpCode::Sub => {
+                        let rb = self.get_rkb(i, base, protoid);
+                        let rc = self.get_rkc(i, base, protoid);
+                        self.set_stack_from_value(ra as usize, arith(OpCode::Sub, &rb, &rc));
+                    }
+                    OpCode::Mul => {
+                        let rb = self.get_rkb(i, base, protoid);
+                        let rc = self.get_rkc(i, base, protoid);
+                        self.set_stack_from_value(ra as usize, arith(OpCode::Mul, &rb, &rc));
+                    }
+                    OpCode::Div => {
+                        let rb = self.get_rkb(i, base, protoid);
+                        let rc = self.get_rkc(i, base, protoid);
+                        self.set_stack_from_value(ra as usize, arith(OpCode::Div, &rb, &rc));
+                    }
+                    OpCode::Mod => {
+                        let rb = self.get_rkb(i, base, protoid);
+                        let rc = self.get_rkc(i, base, protoid);
+                        self.set_stack_from_value(ra as usize, arith(OpCode::Mod, &rb, &rc));
+                    }
+                    OpCode::Pow => {
+                        let rb = self.get_rkb(i, base, protoid);
+                        let rc = self.get_rkc(i, base, protoid);
+                        self.set_stack_from_value(ra as usize, arith(OpCode::Pow, &rb, &rc));
+                    }
                     OpCode::UnaryMinus => {
                         let rb = get_rb(base, i);
-                        match &self.stack[rb] {
-                            TValue::Number(n) => {
-                                self.set_stack_from_value(ra as usize, TValue::Number(-n));
-                            }
-                            _ => {
-                                arith(self, ra, rb, rb, OpCode::UnaryMinus)?;
-                                base = self.base_ci[self.ci].base as u32;
-                            }
-                        }
+                        let rb = &self.stack[rb];
+                        self.set_stack_from_value(ra as usize, arith(OpCode::UnaryMinus, rb, rb));
                     }
                     OpCode::Not => {
                         let b = get_rb(base, i);
@@ -221,13 +221,13 @@ impl LuaState {
                         let rb = get_rb(base, i);
                         match &self.stack[rb] {
                             TValue::Table(tref) => {
-                                let len = tref.borrow().len() as LuaNumber;
-                                self.set_stack_from_value(ra as usize, TValue::Number(len));
+                                let len = tref.borrow().len() as LuaInteger;
+                                self.set_stack_from_value(ra as usize, TValue::Integer(len));
                             }
                             TValue::String(s) => {
                                 self.set_stack_from_value(
                                     ra as usize,
-                                    TValue::Number(s.len() as LuaNumber),
+                                    TValue::Integer(s.len() as LuaInteger),
                                 );
                             }
                             _ => {
@@ -313,7 +313,6 @@ impl LuaState {
                         } // else previous instruction set top
                         match self.dprecall(ra as usize, nresults) {
                             Ok(PrecallStatus::Lua) => {
-                                self.base_ci[self.ci].call_status |= CIST_REENTRY;
                                 // restart luaV_execute over new Lua function
                                 continue 'new_frame;
                             }
@@ -375,15 +374,19 @@ impl LuaState {
                     }
                     OpCode::Return => {
                         let b = get_arg_b(i);
-                        if b != 0 {
-                            self.stack.resize((ra + b - 1) as usize, TValue::Nil);
-                        }
                         if !self.protos[protoid].p.is_empty() {
                             self.close_func(base as StkId);
                         }
-                        let reentry = self.base_ci[self.ci].call_status & CIST_REENTRY != 0;
-                        let b = self.poscall(ra);
-                        if !reentry {
+                        let was_fresh = self.base_ci[self.ci].call_status & CIST_FRESH != 0;
+                        let b = self.poscall(
+                            ra as usize,
+                            if b != 0 {
+                                b as usize - 1
+                            } else {
+                                self.stack.len() - ra as usize
+                            },
+                        );
+                        if was_fresh {
                             // 'ci' is still the called one
                             return Ok(()); // external invocation : return
                         }
@@ -401,45 +404,84 @@ impl LuaState {
                         continue 'new_frame; // restart luaV_execute over new Lua function
                     }
                     OpCode::ForLoop => {
-                        let step = self.stack[ra as usize + 2].get_number_value();
-                        let idx = self.stack[ra as usize].get_number_value() + step;
-                        let limit = self.stack[ra as usize + 1].get_number_value();
-                        let end_loop = if step > 0.0 {
-                            idx <= limit
+                        if self.stack[ra as usize].is_integer() {
+                            let step = self.stack[ra as usize + 2].get_integer_value();
+                            let idx = self.stack[ra as usize].get_integer_value() + step;
+                            let limit = self.stack[ra as usize + 1].get_integer_value();
+                            let end_loop = if step > 0 { idx <= limit } else { limit <= idx };
+                            if end_loop {
+                                // jump back
+                                let jump = get_arg_sbx(i);
+                                self.base_ci[self.ci].saved_pc =
+                                    (self.base_ci[self.ci].saved_pc as i32 + jump) as usize;
+                                self.set_stack_from_value(ra as usize, TValue::Integer(idx)); // update internal index
+                                let rai = ra as usize + 3;
+                                self.set_or_push(rai, TValue::Integer(idx)); // ...and external index
+                            }
                         } else {
-                            limit <= idx
+                            let step = self.stack[ra as usize + 2].into_float().unwrap();
+                            let idx = self.stack[ra as usize].get_float_value() + step;
+                            let limit = self.stack[ra as usize + 1].into_float().unwrap();
+                            let end_loop = if step > 0.0 {
+                                idx <= limit
+                            } else {
+                                limit <= idx
+                            };
+                            if end_loop {
+                                // jump back
+                                let jump = get_arg_sbx(i);
+                                self.base_ci[self.ci].saved_pc =
+                                    (self.base_ci[self.ci].saved_pc as i32 + jump) as usize;
+                                self.set_stack_from_value(ra as usize, TValue::Float(idx)); // update internal index
+                                let rai = ra as usize + 3;
+                                self.set_or_push(rai, TValue::Float(idx)); // ...and external index
+                            }
                         };
-                        if end_loop {
-                            // jump back
-                            let jump = get_arg_sbx(i);
-                            self.base_ci[self.ci].saved_pc =
-                                (self.base_ci[self.ci].saved_pc as i32 + jump) as usize;
-                            self.set_stack_from_value(ra as usize, TValue::Number(idx)); // update internal index
-                            let rai = ra as usize + 3;
-                            self.set_or_push(rai, TValue::Number(idx)); // ...and external index
-                        }
                     }
                     OpCode::ForPrep => {
-                        if Self::to_number(&mut self.stack, ra as usize, Some(ra as usize))
-                            .is_none()
+                        let ra = ra as usize;
+                        let ilimit = self.stack[ra + 1].into_integer();
+                        if self.stack[ra].is_integer()
+                            && self.stack[ra + 2].is_integer()
+                            && ilimit.is_ok()
                         {
-                            return self.run_error("'for' initial value must be a number");
-                        }
-                        if Self::to_number(&mut self.stack, ra as usize + 1, Some(ra as usize + 1))
+                            let ilimit = ilimit.unwrap();
+                            let initv = self.stack[ra].get_integer_value();
+                            self.set_stack_from_value(ra + 1, TValue::from(ilimit));
+                            self.set_stack_from_value(
+                                ra,
+                                TValue::from(initv - self.stack[ra + 2].get_integer_value()),
+                            );
+                        } else {
+                            if Self::to_number(&mut self.stack, ra as usize, Some(ra as usize))
+                                .is_none()
+                            {
+                                return self.run_error("'for' initial value must be a number");
+                            }
+                            if Self::to_number(
+                                &mut self.stack,
+                                ra as usize + 1,
+                                Some(ra as usize + 1),
+                            )
                             .is_none()
-                        {
-                            return self.run_error("'for' limit must be a number");
-                        }
-                        if Self::to_number(&mut self.stack, ra as usize + 2, Some(ra as usize + 2))
+                            {
+                                return self.run_error("'for' limit must be a number");
+                            }
+                            if Self::to_number(
+                                &mut self.stack,
+                                ra as usize + 2,
+                                Some(ra as usize + 2),
+                            )
                             .is_none()
-                        {
-                            return self.run_error("'for' step must be a number");
+                            {
+                                return self.run_error("'for' step must be a number");
+                            }
+                            // init = init - step
+                            self.stack[ra as usize] = TValue::Float(
+                                self.stack[ra as usize].get_float_value()
+                                    - self.stack[ra as usize + 2].get_float_value(),
+                            );
                         }
-                        // init = init - step
-                        self.stack[ra as usize] = TValue::Number(
-                            self.stack[ra as usize].get_number_value()
-                                - self.stack[ra as usize + 2].get_number_value(),
-                        );
                         let jump = get_arg_sbx(i);
                         self.base_ci[self.ci].saved_pc =
                             (self.base_ci[self.ci].saved_pc as i32 + jump) as usize;
@@ -450,7 +492,7 @@ impl LuaState {
                         self.set_stack_from_idx(cb + 1, ra as StkId + 1);
                         self.set_stack_from_idx(cb + 2, ra as StkId + 2);
                         let nresults = get_arg_c(i);
-                        self.dcall(cb, nresults as i32, true)?;
+                        self.dcall(cb, nresults as i32)?;
                         self.stack.resize(self.base_ci[self.ci].top, TValue::Nil);
                         let ci_pc = self.base_ci[self.ci].saved_pc;
                         let i = self.get_instruction(protoid, ci_pc);
@@ -459,7 +501,7 @@ impl LuaState {
                         debug_assert!(get_opcode(i) == OpCode::TForLoop);
                         if !self.stack[ra as usize + 1].is_nil() {
                             // continue loop ?
-                            self.stack[ra as usize] = self.stack[ra as usize + 1].clone(); // save control variable
+                            self.set_stack_from_idx(ra as usize, ra as usize + 1); // save control variable
                             let jump = get_arg_sbx(i);
                             self.base_ci[self.ci].saved_pc =
                                 (self.base_ci[self.ci].saved_pc as i32 + jump) as usize;
@@ -495,13 +537,14 @@ impl LuaState {
                             let mut t = tref.borrow_mut();
                             while n > 0 {
                                 t.set(
-                                    TValue::Number(last as LuaNumber),
+                                    TValue::Integer(last as LuaInteger),
                                     self.stack[(ra + n) as usize].clone(),
                                 );
                                 last -= 1;
                                 n -= 1;
                             }
                         }
+                        self.stack.resize(self.base_ci[self.ci].top, TValue::Nil);
                     }
                     OpCode::Closure => {
                         let pid = get_arg_bx(i);
@@ -525,24 +568,24 @@ impl LuaState {
                         }
                     }
                     OpCode::VarArg => {
+                        let ra = ra as usize;
                         let mut b = get_arg_b(i) as i32 - 1;
-                        let cbase = self.base_ci[self.ci].base;
-                        let n = cbase - func - self.protos[protoid].numparams - 1;
-                        if b == LUA_MULTRET {
-                            b = n as i32;
-                            self.stack.resize(ra as usize + n, TValue::Nil);
+                        let cbase = self.base_ci[self.ci].base as i32;
+                        let n = (cbase - func as i32 - self.protos[protoid].numparams as i32 - 1)
+                            .max(0);
+                        if b < 0 {
+                            b = n;
+                            self.stack.resize(ra + n as usize, TValue::Nil);
                         }
-                        for j in 0..b as usize {
-                            if j < n {
-                                self.stack[ra as usize + j] =
-                                    self.stack[(cbase + j - n) as usize].clone();
-                            } else {
-                                self.stack[ra as usize + j] = TValue::Nil;
-                            }
+                        for j in 0..b.min(n) as usize {
+                            self.set_stack_from_idx(ra + j, (cbase + j as i32 - n) as usize);
+                        }
+                        for j in b.min(n)..b {
+                            self.set_stack_from_value(ra + j as usize, TValue::Nil);
                         }
                     }
                     OpCode::ExtraArg => {
-                        todo!()
+                        unreachable!()
                     }
                 }
             }
@@ -572,7 +615,7 @@ fn less_than(state: &mut LuaState, rkb: TValue, rkc: TValue) -> Result<bool, Lua
     if rkb.get_type_name() != rkc.get_type_name() {
         luaG::order_error(state, &rkb, &rkc)?;
     } else if rkb.is_number() {
-        return Ok(rkb.get_number_value() < rkc.get_number_value());
+        return Ok(rkb.into_float().unwrap() < rkc.into_float().unwrap());
     } else if rkb.is_string() {
         return Ok(rkb.borrow_string_value() < rkc.borrow_string_value());
     }
@@ -585,88 +628,13 @@ fn less_equal(state: &mut LuaState, rkb: TValue, rkc: TValue) -> Result<bool, Lu
     if rkb.get_type_name() != rkc.get_type_name() {
         luaG::order_error(state, &rkb, &rkc)?;
     } else if rkb.is_number() {
-        return Ok(rkb.get_number_value() <= rkc.get_number_value());
+        return Ok(rkb.into_float().unwrap() <= rkc.into_float().unwrap());
     } else if rkb.is_string() {
         return Ok(rkb.borrow_string_value() <= rkc.borrow_string_value());
     }
     // TODO metamethods
     luaG::order_error(state, &rkb, &rkc)?;
     unreachable!()
-}
-
-fn arith(state: &mut LuaState, ra: u32, rb: usize, rc: usize, op: OpCode) -> Result<(), LuaError> {
-    if let (Some(b), Some(c)) = (
-        LuaState::to_number(&mut state.stack, rb, None),
-        LuaState::to_number(&mut state.stack, rc, None),
-    ) {
-        match op {
-            OpCode::Add => {
-                state.stack[ra as usize] = TValue::Number(b + c);
-            }
-            OpCode::Sub => {
-                state.stack[ra as usize] = TValue::Number(b - c);
-            }
-            OpCode::Mul => {
-                state.stack[ra as usize] = TValue::Number(b * c);
-            }
-            OpCode::Div => {
-                state.stack[ra as usize] = TValue::Number(b / c);
-            }
-            OpCode::Mod => {
-                state.stack[ra as usize] = TValue::Number(b % c);
-            }
-            OpCode::Pow => {
-                state.stack[ra as usize] = TValue::Number(b.powf(c));
-            }
-            OpCode::UnaryMinus => {
-                state.stack[ra as usize] = TValue::Number(-b);
-            }
-            _ => unreachable!(),
-        }
-    } else if !call_bin_tm(state, rb, rc, ra, op)? {
-        return luaG::arith_error(state, rb, rc);
-    }
-    Ok(())
-}
-
-fn arithv(
-    state: &mut LuaState,
-    ra: u32,
-    rb: usize,
-    rc: usize,
-    rvb: TValue,
-    rvc: TValue,
-    op: OpCode,
-) -> Result<(), LuaError> {
-    if let (Ok(b), Ok(c)) = (rvb.into_number(), rvc.into_number()) {
-        match op {
-            OpCode::Add => {
-                state.stack[ra as usize] = TValue::Number(b + c);
-            }
-            OpCode::Sub => {
-                state.stack[ra as usize] = TValue::Number(b - c);
-            }
-            OpCode::Mul => {
-                state.stack[ra as usize] = TValue::Number(b * c);
-            }
-            OpCode::Div => {
-                state.stack[ra as usize] = TValue::Number(b / c);
-            }
-            OpCode::Mod => {
-                state.stack[ra as usize] = TValue::Number(b % c);
-            }
-            OpCode::Pow => {
-                state.stack[ra as usize] = TValue::Number(b.powf(c));
-            }
-            OpCode::UnaryMinus => {
-                state.stack[ra as usize] = TValue::Number(-b);
-            }
-            _ => unreachable!(),
-        }
-    } else if !call_bin_tm(state, rb, rc, ra, op)? {
-        return luaG::arith_error(state, rb, rc);
-    }
-    Ok(())
 }
 
 fn call_bin_tm(

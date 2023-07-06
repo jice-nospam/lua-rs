@@ -7,7 +7,7 @@ use crate::{
     limits::Instruction,
     luaH::{Table, TableRef},
     parser::UpValDesc,
-    LuaNumber, LuaRustFunction,
+    LuaFloat, LuaInteger, LuaRustFunction,
 };
 
 /// index in the current stack
@@ -22,7 +22,8 @@ pub type ProtoId = usize;
 pub enum TValue {
     #[default]
     Nil,
-    Number(LuaNumber),
+    Float(LuaFloat),
+    Integer(LuaInteger),
     String(Rc<String>),
     Table(TableRef),
     Function(ClosureRef),
@@ -31,7 +32,6 @@ pub enum TValue {
     Thread(),
     LightUserData(),
 }
-
 impl From<&str> for TValue {
     fn from(value: &str) -> Self {
         Self::String(Rc::new(value.to_owned()))
@@ -68,12 +68,24 @@ impl From<&TableRef> for TValue {
     }
 }
 
+impl From<LuaInteger> for TValue {
+    fn from(value: LuaInteger) -> Self {
+        Self::Integer(value)
+    }
+}
+
+impl From<LuaFloat> for TValue {
+    fn from(value: LuaFloat) -> Self {
+        Self::Float(value)
+    }
+}
+
 impl TValue {
     #[inline]
     pub fn get_type_name(&self) -> &str {
         match self {
             TValue::Nil => "nil",
-            TValue::Number(_) => "number",
+            TValue::Float(_) | TValue::Integer(_) => "number",
             TValue::String(_) => "string",
             TValue::Table(_) => "table",
             TValue::Function(_) => "function",
@@ -88,10 +100,16 @@ impl TValue {
     pub fn is_nil(&self) -> bool {
         matches!(self, TValue::Nil)
     }
-    pub fn get_number_value(&self) -> LuaNumber {
+    pub fn get_float_value(&self) -> LuaFloat {
         match self {
-            TValue::Number(n) => *n,
+            TValue::Float(n) => *n,
             _ => 0.0,
+        }
+    }
+    pub fn get_integer_value(&self) -> LuaInteger {
+        match self {
+            TValue::Integer(n) => *n,
+            _ => 0,
         }
     }
     pub fn borrow_string_value(&self) -> &str {
@@ -100,19 +118,56 @@ impl TValue {
             _ => unreachable!(),
         }
     }
-    pub fn is_number(&self) -> bool {
-        matches!(self, TValue::Number(_))
+    pub fn is_float(&self) -> bool {
+        matches!(self, TValue::Float(_))
     }
-    pub fn to_number(&self) -> Result<LuaNumber, ()> {
+    pub fn is_integer(&self) -> bool {
+        matches!(self, TValue::Integer(_))
+    }
+    pub fn is_number(&self) -> bool {
         match self {
-            TValue::Number(n) => Ok(*n),
+            TValue::Float(_) | TValue::Integer(_) => true,
+            _ => false,
+        }
+    }
+    pub fn to_float(&self) -> Result<LuaFloat, ()> {
+        match self {
+            TValue::Float(n) => Ok(*n),
             _ => Err(()),
         }
     }
-    pub fn into_number(&self) -> Result<LuaNumber, ()> {
+    pub fn to_integer(&self) -> Result<LuaInteger, ()> {
         match self {
-            TValue::Number(n) => Ok(*n),
+            TValue::Integer(n) => Ok(*n),
+            _ => Err(()),
+        }
+    }
+    pub fn into_float(&self) -> Result<LuaFloat, ()> {
+        match self {
+            TValue::Integer(n) => Ok(*n as LuaFloat),
+            TValue::Float(n) => Ok(*n),
             TValue::String(rcs) => str2d(&*rcs).ok_or(()),
+            _ => Err(()),
+        }
+    }
+    pub fn into_integer(&self) -> Result<LuaInteger, ()> {
+        match self {
+            TValue::Integer(n) => Ok(*n),
+            TValue::Float(n) => {
+                if n.fract() == 0.0 {
+                    Ok(*n as LuaInteger)
+                } else {
+                    Err(())
+                }
+            }
+            TValue::String(rcs) => {
+                let v = str2d(&*rcs).ok_or(())?;
+                if v.fract() == 0.0 {
+                    Ok(v as LuaInteger)
+                } else {
+                    Err(())
+                }
+            }
             _ => Err(()),
         }
     }
@@ -136,20 +191,20 @@ impl TValue {
             _ => false,
         }
     }
+    pub(crate) fn to_pointer(&self) -> *const TValue {
+        self as *const TValue
+    }
 }
 
 impl Display for TValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TValue::Nil => write!(f, "nil"),
-            TValue::Number(n) => write!(f, "{}", n),
+            TValue::Float(n) => write!(f, "{}", n),
+            TValue::Integer(i) => write!(f, "{}", i),
             TValue::Boolean(b) => write!(f, "{}", b),
             TValue::String(s) => write!(f, "{}", s),
-            TValue::Table(tr) => write!(f, "table: {:p}", tr),
-            TValue::Function(cl) => write!(f, "function: {:p}", cl),
-            TValue::UserData(_) => todo!(),
-            TValue::Thread() => todo!(),
-            TValue::LightUserData() => todo!(),
+            _ => write!(f, "{} : {:?}", self.get_type_name(), self.to_pointer()),
         }
     }
 }
@@ -166,7 +221,8 @@ impl std::fmt::Debug for TValue {
 impl PartialEq for TValue {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Number(l0), Self::Number(r0)) => l0 == r0,
+            (Self::Float(l0), Self::Float(r0)) => l0 == r0,
+            (Self::Integer(l0), Self::Integer(r0)) => l0 == r0,
             (Self::String(l0), Self::String(r0)) => l0 == r0,
             (Self::Boolean(l0), Self::Boolean(r0)) => l0 == r0,
             _ => core::mem::discriminant(self) == core::mem::discriminant(other),

@@ -18,7 +18,7 @@ use crate::{
         get_arg_a, set_arg_b, set_arg_c, set_opcode, OpCode, LFIELDS_PER_FLUSH, MAXARG_BX, NO_JUMP,
     },
     state::LuaState,
-    LuaNumber, LUA_MULTRET,
+    LuaFloat, LuaInteger, LUA_MULTRET,
 };
 
 #[derive(Clone, Copy)]
@@ -26,14 +26,20 @@ pub(crate) enum BinaryOp {
     Add = 0,
     Sub,
     Mul,
-    Div,
     Mod,
     Pow,
+    Div,
+    IntDiv,
+    BinaryAnd,
+    BinaryOr,
+    BinaryXor,
+    Shl,
+    Shr,
     Concat,
-    Ne,
     Eq,
     Lt,
     Le,
+    Ne,
     Gt,
     Ge,
     And,
@@ -44,32 +50,60 @@ struct BinaryPriority {
     left: usize,
     right: usize,
 }
-const BINARY_OP_PRIO: [BinaryPriority; 15] = [
-    BinaryPriority { left: 6, right: 6 },  // Add
-    BinaryPriority { left: 6, right: 6 },  // Sub
-    BinaryPriority { left: 7, right: 7 },  // Mul
-    BinaryPriority { left: 7, right: 7 },  // Div
-    BinaryPriority { left: 7, right: 7 },  // Mod
-    BinaryPriority { left: 10, right: 9 }, // Pow
-    BinaryPriority { left: 5, right: 4 },  // Concat
-    BinaryPriority { left: 3, right: 3 },  // Ne
-    BinaryPriority { left: 3, right: 3 },  // Eq
-    BinaryPriority { left: 3, right: 3 },  // Lt
-    BinaryPriority { left: 3, right: 3 },  // Le
-    BinaryPriority { left: 3, right: 3 },  // Gt
-    BinaryPriority { left: 3, right: 3 },  // Ge
-    BinaryPriority { left: 2, right: 2 },  // And
-    BinaryPriority { left: 1, right: 1 },  // Or
+const BINARY_OP_PRIO: [BinaryPriority; 21] = [
+    BinaryPriority {
+        left: 10,
+        right: 10,
+    }, // Add
+    BinaryPriority {
+        left: 10,
+        right: 10,
+    }, // Sub
+    BinaryPriority {
+        left: 11,
+        right: 11,
+    }, // Mul
+    BinaryPriority {
+        left: 11,
+        right: 11,
+    }, // Mod
+    BinaryPriority {
+        left: 14,
+        right: 13,
+    }, // Pow (right associative)
+    BinaryPriority {
+        left: 11,
+        right: 11,
+    }, // Div
+    BinaryPriority {
+        left: 11,
+        right: 11,
+    }, // IntDiv
+    BinaryPriority { left: 6, right: 6 }, // BinaryAnd
+    BinaryPriority { left: 4, right: 4 }, // BinaryOr
+    BinaryPriority { left: 5, right: 5 }, // BinaryXor
+    BinaryPriority { left: 7, right: 7 }, // Shl
+    BinaryPriority { left: 7, right: 7 }, // Shr
+    BinaryPriority { left: 9, right: 8 }, // Concat (right associative)
+    BinaryPriority { left: 3, right: 3 }, // Eq
+    BinaryPriority { left: 3, right: 3 }, // Lt
+    BinaryPriority { left: 3, right: 3 }, // Le
+    BinaryPriority { left: 3, right: 3 }, // Ne
+    BinaryPriority { left: 3, right: 3 }, // Gt
+    BinaryPriority { left: 3, right: 3 }, // Ge
+    BinaryPriority { left: 2, right: 2 }, // And
+    BinaryPriority { left: 1, right: 1 }, // Or
 ];
 
 pub(crate) enum UnaryOp {
     Minus,
+    BinaryNot,
     Not,
     Len,
 }
 
 /// priority for unary operators
-const UNARY_PRIORITY: usize = 8;
+const UNARY_PRIORITY: usize = 12;
 
 /// Description of an upvalue for function prototypes
 #[derive(Default, Clone)]
@@ -173,6 +207,11 @@ impl FuncState {
         self.bl.last().unwrap()
     }
 
+    /// Add constant 'value' to prototype's list of constants (field 'k').
+    /// Use scanner's table to cache position of constants in constant list
+    /// and try to reuse constants. Because some values should not be used
+    /// as keys (nil cannot be a key, integer keys can collapse with float
+    /// keys), the caller must provide a useful 'key' for indexing the cache.
     pub(crate) fn add_constant(
         &mut self,
         state: &mut LuaState,
@@ -181,12 +220,12 @@ impl FuncState {
     ) -> usize {
         let val = self.h.borrow_mut().get(&key).cloned();
         match val {
-            Some(TValue::Number(n)) => n as usize,
+            Some(TValue::Integer(n)) => n as usize,
             _ => {
                 let kid = state.protos[self.f].k.len();
                 self.h
                     .borrow_mut()
-                    .set(key, TValue::Number(kid as LuaNumber));
+                    .set(key, TValue::Integer(kid as LuaInteger));
                 state.protos[self.f].k.push(value);
                 kid
             }
@@ -198,8 +237,13 @@ impl FuncState {
         self.add_constant(state, tvalue.clone(), tvalue)
     }
 
-    pub fn number_constant(&mut self, state: &mut LuaState, value: LuaNumber) -> usize {
-        let tvalue = TValue::Number(value);
+    pub fn float_constant(&mut self, state: &mut LuaState, value: LuaFloat) -> usize {
+        let tvalue = TValue::Float(value);
+        self.add_constant(state, tvalue.clone(), tvalue)
+    }
+
+    pub fn integer_constant(&mut self, state: &mut LuaState, value: LuaInteger) -> usize {
+        let tvalue = TValue::Integer(value);
         self.add_constant(state, tvalue.clone(), tvalue)
     }
 }
@@ -230,12 +274,8 @@ fn main_func<T>(lex: &mut LexState<T>, state: &mut LuaState) -> Result<(), LuaEr
     Ok(())
 }
 
-fn open_func<T>(lex: &mut LexState<T>, state: &mut LuaState) {
+fn open_func<T>(lex: &mut LexState<T>, _state: &mut LuaState) {
     lex.borrow_mut_fs(None).first_local = lex.dyd.actvar.len();
-    // put table of constants on stack
-    state
-        .stack
-        .push(TValue::Table(Rc::clone(&lex.borrow_fs(None).h)));
     enter_block(lex, false);
 }
 
@@ -243,7 +283,6 @@ fn close_func<T>(lex: &mut LexState<T>, state: &mut LuaState) -> Result<(), LuaE
     luaK::ret(lex, state, 0, 0)?; // final return
     leave_block(lex, state)?;
     lex.vfs.pop();
-    state.stack.pop(); // pop table of constants
     Ok(())
 }
 
@@ -384,8 +423,8 @@ fn label_stat<T>(
 ) -> Result<(), LuaError> {
     lex.check_repeated(state, &label)?; // check for repeated labels
     check_next(lex, state, Reserved::DbColon as u32)?; // skip double colon
-    let pc = lex.next_pc(state) as i32;
     let l = lex.dyd.label.len();
+    let pc = luaK::get_label(lex, state);
     lex.dyd.label.push(lex.new_label_entry(label, line, pc));
     skip_noop_stat(lex, state)?; // skip other no-op statements
     if block_follow(lex, false) {
@@ -407,8 +446,10 @@ pub enum ExpressionKind {
     False,
     /// info = index of constant in `k'
     Constant,
-    /// nval = numerical value
-    NumberConstant,
+    /// nval = float value
+    FloatConstant,
+    /// nval = integer value
+    IntegerConstant,
     /// info = result register
     NonRelocable,
     /// info = local register
@@ -444,8 +485,10 @@ pub struct ExpressionDesc {
     pub ind: IndexedDesc,
     /// for generic use
     pub info: i32,
-    /// for ExpressionKind::NumberConstant
-    pub nval: LuaNumber,
+    /// for ExpressionKind::FloatConstant
+    pub nval: LuaFloat,
+    /// for ExpressionKind::IntegerConstant
+    pub ival: LuaInteger,
     /// patch list of `exit when true'
     pub t: i32,
     /// patch list of `exit when false'
@@ -458,9 +501,36 @@ impl ExpressionDesc {
         self.t = NO_JUMP;
         self.f = NO_JUMP;
     }
-
+    #[inline]
+    pub(crate) fn has_jumps(&self) -> bool {
+        self.t != self.f
+    }
     pub(crate) fn is_numeral(&self) -> bool {
-        self.k == ExpressionKind::NumberConstant && self.t == NO_JUMP && self.f == NO_JUMP
+        if self.has_jumps() {
+            false
+        } else {
+            match self.k {
+                ExpressionKind::FloatConstant | ExpressionKind::IntegerConstant => true,
+                _ => false,
+            }
+        }
+    }
+    pub(crate) fn to_numeral(&self, v: &mut TValue) -> bool {
+        if self.has_jumps() {
+            false
+        } else {
+            match self.k {
+                ExpressionKind::IntegerConstant => {
+                    *v = TValue::from(self.ival);
+                    true
+                }
+                ExpressionKind::FloatConstant => {
+                    *v = TValue::from(self.nval);
+                    true
+                }
+                _ => false,
+            }
+        }
     }
 }
 
@@ -564,9 +634,6 @@ fn assignment<T>(
         let nexps = exp_list(lex, state, &mut exp)?;
         if nexps != nvars {
             adjust_assign(lex, state, nvars, nexps, &mut exp)?;
-            if nexps > nvars {
-                lex.borrow_mut_fs(None).freereg -= nexps - nvars; // remove extra values
-            }
         } else {
             luaK::set_one_ret(lex, state, &mut exp); // close last expression
             luaK::store_var(lex, state, &lhs.last().unwrap().v, &mut exp)?;
@@ -926,18 +993,19 @@ fn field<T>(
 fn single_var<T>(
     lex: &mut LexState<T>,
     state: &mut LuaState,
-    exp: &mut ExpressionDesc,
+    var: &mut ExpressionDesc,
 ) -> Result<(), LuaError> {
     let name = str_checkname(lex, state)?;
-    if single_var_aux(lex, state, lex.vfs.len() - 1, &name, exp, true)? == ExpressionKind::Void {
+    single_var_aux(lex, state, lex.vfs.len() - 1, &name, var, true)?;
+    if var.k == ExpressionKind::Void {
         // global name?
         let mut key = ExpressionDesc::default();
         // get environment variable
         let envn = lex.envn.clone();
-        single_var_aux(lex, state, lex.vfs.len() - 1, &envn, exp, true)?;
-        debug_assert!(exp.k == ExpressionKind::LocalRegister || exp.k == ExpressionKind::UpValue);
+        single_var_aux(lex, state, lex.vfs.len() - 1, &envn, var, true)?;
+        debug_assert!(var.k != ExpressionKind::Void);
         code_string(lex, state, &mut key, &name); // key is variable name
-        luaK::indexed(lex, state, exp, &mut key)?; // env[varname]
+        luaK::indexed(lex, state, var, &mut key)?; // env[varname]
     }
     Ok(())
 }
@@ -949,7 +1017,7 @@ fn single_var_aux<T>(
     name: &str,
     exp: &mut ExpressionDesc,
     base: bool,
-) -> Result<ExpressionKind, LuaError> {
+) -> Result<(), LuaError> {
     // look up at current level
     if let Some(v) = lex.search_var(state, Some(fsid), name) {
         exp.init(ExpressionKind::LocalRegister, v as i32);
@@ -957,22 +1025,22 @@ fn single_var_aux<T>(
             // local will be used as an upval
             lex.borrow_mut_fs(Some(fsid)).mark_upval(v);
         }
-        Ok(ExpressionKind::LocalRegister)
     } else {
         // not found at current level; try upvalues
         let mut idx = search_upvalues(lex, state, fsid, name);
         if idx.is_none() {
             if fsid == 0 {
                 // no more levels. var is global
-                return Ok(ExpressionKind::Void);
+                exp.init(ExpressionKind::Void, 0);
+                return Ok(());
             }
             let prev_fsid = fsid - 1;
             // not found ?
             // try upper levels
-            if let Ok(ExpressionKind::Void) = single_var_aux(lex, state, prev_fsid, name, exp, base)
-            {
+            single_var_aux(lex, state, prev_fsid, name, exp, base)?;
+            if exp.k == ExpressionKind::Void {
                 // not found; is a global
-                return Ok(ExpressionKind::Void);
+                return Ok(());
             } else {
                 // else was LOCAL or UPVAL
                 // will be a new upvalue
@@ -980,8 +1048,8 @@ fn single_var_aux<T>(
             }
         }
         exp.init(ExpressionKind::UpValue, idx.unwrap() as i32);
-        Ok(ExpressionKind::UpValue)
     }
+    Ok(())
 }
 
 fn new_upvalue<T>(
@@ -1079,14 +1147,14 @@ fn subexpr<T>(
         let mut exp2 = ExpressionDesc::default();
         // read sub-expression with higher priority
         let nextop = subexpr(lex, state, &mut exp2, BINARY_OP_PRIO[op as usize].right)?;
-        luaK::postfix(lex, state, op, exp, &mut exp2, line)?;
+        luaK::pos_fix(lex, state, op, exp, &mut exp2, line)?;
         oop = nextop;
     }
     leave_level(lex, state);
     Ok(oop) // return first untreated operator
 }
 
-/// simpleexp -> NUMBER | STRING | NIL | TRUE | FALSE | ... |
+/// simpleexp -> FLOAT | INTEGER | STRING | NIL | TRUE | FALSE | ... |
 /// constructor | FUNCTION body | suffixedexp
 fn simple_exp<T>(
     lex: &mut LexState<T>,
@@ -1094,10 +1162,18 @@ fn simple_exp<T>(
     exp: &mut ExpressionDesc,
 ) -> Result<(), LuaError> {
     match &lex.t.clone() {
-        Some(t) if t.token == Reserved::Number as u32 => {
+        Some(t) if t.token == Reserved::Float as u32 => {
             if let SemInfo::Number(val) = t.seminfo {
-                exp.init(ExpressionKind::NumberConstant, 0);
+                exp.init(ExpressionKind::FloatConstant, 0);
                 exp.nval = val;
+            } else {
+                unreachable!()
+            }
+        }
+        Some(t) if t.token == Reserved::Integer as u32 => {
+            if let SemInfo::Integer(val) = t.seminfo {
+                exp.init(ExpressionKind::IntegerConstant, 0);
+                exp.ival = val;
             } else {
                 unreachable!()
             }
@@ -1239,6 +1315,7 @@ fn unary_op(t: &Option<crate::lex::Token>) -> Option<UnaryOp> {
     match t {
         Some(t) if t.token == Reserved::Not as u32 => Some(UnaryOp::Not),
         Some(t) if t.token == '-' as u32 => Some(UnaryOp::Minus),
+        Some(t) if t.token == '~' as u32 => Some(UnaryOp::BinaryNot),
         Some(t) if t.token == '#' as u32 => Some(UnaryOp::Len),
         _ => None,
     }
@@ -1249,9 +1326,15 @@ fn binary_op(t: &Option<crate::lex::Token>) -> Option<BinaryOp> {
         Some(t) if t.token == '+' as u32 => Some(BinaryOp::Add),
         Some(t) if t.token == '-' as u32 => Some(BinaryOp::Sub),
         Some(t) if t.token == '*' as u32 => Some(BinaryOp::Mul),
-        Some(t) if t.token == '/' as u32 => Some(BinaryOp::Div),
         Some(t) if t.token == '%' as u32 => Some(BinaryOp::Mod),
         Some(t) if t.token == '^' as u32 => Some(BinaryOp::Pow),
+        Some(t) if t.token == '/' as u32 => Some(BinaryOp::Div),
+        Some(t) if t.token == Reserved::IntDiv as u32 => Some(BinaryOp::IntDiv),
+        Some(t) if t.token == '&' as u32 => Some(BinaryOp::BinaryAnd),
+        Some(t) if t.token == '|' as u32 => Some(BinaryOp::BinaryOr),
+        Some(t) if t.token == '~' as u32 => Some(BinaryOp::BinaryXor),
+        Some(t) if t.token == Reserved::Shl as u32 => Some(BinaryOp::Shl),
+        Some(t) if t.token == Reserved::Shr as u32 => Some(BinaryOp::Shr),
         Some(t) if t.token == Reserved::Concat as u32 => Some(BinaryOp::Concat),
         Some(t) if t.token == Reserved::Ne as u32 => Some(BinaryOp::Ne),
         Some(t) if t.token == Reserved::Eq as u32 => Some(BinaryOp::Eq),
@@ -1355,6 +1438,9 @@ fn adjust_assign<T>(
             reserve_regs(lex, state, extra as usize)?;
             luaK::nil(lex, state, reg as u32, extra)?;
         }
+    }
+    if nexps > nvars {
+        lex.borrow_mut_fs(None).freereg -= nexps - nvars; //  remove extra values
     }
     Ok(())
 }
@@ -1690,7 +1776,7 @@ fn for_num<T>(
         exp1(lex, state)?; // optional step
     } else {
         // default step = 1
-        let k = luaK::number_constant(lex, state, 1.0) as u32;
+        let k = luaK::integer_constant(lex, state, 1) as u32;
         code_k(lex, state, lex.borrow_fs(None).freereg as i32, k)?;
         reserve_regs(lex, state, 1)?;
     }
@@ -1843,7 +1929,7 @@ fn test_then_block<T>(
         luaK::go_if_false(lex, state, &mut v)?; // will jump to label if condition is true
         enter_block(lex, false); // must enter block before 'goto'
         goto_stat(lex, state, v.t)?; // handle goto/break
-        skip_noop_stat(lex, state)?; // skip other no-op statements
+        while test_next(lex, state, ';' as u32)? {} // skip colons
         if block_follow(&lex, false) {
             // 'goto' is the entire block?
             leave_block(lex, state)?;

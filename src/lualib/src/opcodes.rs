@@ -2,20 +2,21 @@
 
 use crate::limits::Instruction;
 
-///   We assume that instructions are unsigned numbers.
-///   All instructions have an opcode in the first 6 bits.
-///   Instructions can have the following fields:
-///     `A' : 8 bits
-///     `B' : 9 bits
-///     `C' : 9 bits
-///     `Bx' : 18 bits (`B' and `C' together)
-///     `sBx' : signed Bx
+///  We assume that instructions are unsigned numbers.
+/// All instructions have an opcode in the first 6 bits.
+/// Instructions can have the following fields:
+/// 'A' : 8 bits
+/// 'B' : 9 bits
+/// 'C' : 9 bits
+/// 'Ax' : 26 bits ('A', 'B', and 'C' together)
+/// 'Bx' : 18 bits ('B' and 'C' together)
+/// 'sBx' : signed Bx
 
-///   A signed argument is represented in excess K; that is, the number
-///   value is the unsigned value minus K. K is exactly the maximum value
-///   for that argument (so that -max is represented by 0, and +max is
-///   represented by 2*max), which is half the maximum for the corresponding
-///   unsigned argument.
+/// A signed argument is represented in excess K; that is, the number
+/// value is the unsigned value minus K. K is exactly the maximum value
+/// for that argument (so that -max is represented by 0, and +max is
+/// represented by 2*max), which is half the maximum for the corresponding
+/// unsigned argument.
 
 /// size and position of opcode arguments.
 pub const SIZE_C: usize = 9;
@@ -59,12 +60,12 @@ pub const NO_REG: u32 = MAXARG_A as u32;
 pub const NO_JUMP: i32 = -1;
 
 #[cfg(feature = "debug_logs")]
-pub(crate) const OPCODE_NAME: [&str; 40] = [
+pub(crate) const OPCODE_NAME: [&str; 47] = [
     "move", "loadk", "loadkx", "loadbool", "loadnil", "getupval", "gettabup", "gettable",
-    "settabup", "setupval", "settable", "newtable", "opself", "add", "sub", "mul", "div", "mod",
-    "pow", "unm", "not", "len", "concat", "jmp", "eq", "lt", "le", "test", "testset", "call",
-    "tailcall", "return", "forloop", "forprep", "tforcall", "tforloop", "setlist", "closure",
-    "vararg", "extraarg",
+    "settabup", "setupval", "settable", "newtable", "opself", "add", "sub", "mul", "mod", "pow",
+    "div", "idiv", "band", "bor", "bxor", "shl", "shr", "unm", "bnot", "not", "len", "concat",
+    "jmp", "eq", "lt", "le", "test", "testset", "call", "tailcall", "return", "forloop", "forprep",
+    "tforcall", "tforloop", "setlist", "closure", "vararg", "extraarg",
 ];
 
 #[rustfmt::skip]
@@ -122,14 +123,28 @@ pub enum OpCode {
     Sub,
     ///         A B C   R(A) := RK(B) * RK(C)
     Mul,
-    ///         A B C   R(A) := RK(B) / RK(C)
-    Div,
     ///         A B C   R(A) := RK(B) % RK(C)
     Mod,
     ///         A B C   R(A) := RK(B) ^ RK(C)
     Pow,
+    ///         A B C   R(A) := RK(B) / RK(C)
+    Div,
+    ///         A B C   R(A) := RK(B) // RK(C)
+    IntegerDiv,
+    ///         A B C   R(A) := RK(B) & RK(C)
+    BinaryAnd,
+    ///         A B C   R(A) := RK(B) | RK(C)
+    BinaryOr,
+    ///         A B C   R(A) := RK(B) ~ RK(C)
+    BinaryXor,
+    ///         A B C   R(A) := RK(B) << RK(C)
+    Shl,
+    ///         A B C   R(A) := RK(B) >> RK(C)
+    Shr,
     ///         A B     R(A) := -R(B)
     UnaryMinus,
+    ///         A B     R(A) := ~R(B)
+    BinaryNot,
     ///         A B     R(A) := not R(B)
     Not,
     ///         A B     R(A) := length of R(B)
@@ -196,6 +211,7 @@ impl OpCode {
                 | OpCode::GetUpVal
                 | OpCode::SetupVal
                 | OpCode::UnaryMinus
+                | OpCode::BinaryNot
                 | OpCode::Not
                 | OpCode::Len
                 | OpCode::Return
@@ -244,30 +260,37 @@ impl TryFrom<u32> for OpCode {
             13 => Ok(Self::Add),
             14 => Ok(Self::Sub),
             15 => Ok(Self::Mul),
-            16 => Ok(Self::Div),
-            17 => Ok(Self::Mod),
-            18 => Ok(Self::Pow),
-            19 => Ok(Self::UnaryMinus),
-            20 => Ok(Self::Not),
-            21 => Ok(Self::Len),
-            22 => Ok(Self::Concat),
-            23 => Ok(Self::Jmp),
-            24 => Ok(Self::Eq),
-            25 => Ok(Self::Lt),
-            26 => Ok(Self::Le),
-            27 => Ok(Self::Test),
-            28 => Ok(Self::TestSet),
-            29 => Ok(Self::Call),
-            30 => Ok(Self::TailCall),
-            31 => Ok(Self::Return),
-            32 => Ok(Self::ForLoop),
-            33 => Ok(Self::ForPrep),
-            34 => Ok(Self::TForCall),
-            35 => Ok(Self::TForLoop),
-            36 => Ok(Self::SetList),
-            37 => Ok(Self::Closure),
-            38 => Ok(Self::VarArg),
-            39 => Ok(Self::ExtraArg),
+            16 => Ok(Self::Mod),
+            17 => Ok(Self::Pow),
+            18 => Ok(Self::Div),
+            19 => Ok(Self::IntegerDiv),
+            20 => Ok(Self::BinaryAnd),
+            21 => Ok(Self::BinaryOr),
+            22 => Ok(Self::BinaryXor),
+            23 => Ok(Self::Shl),
+            24 => Ok(Self::Shr),
+            25 => Ok(Self::UnaryMinus),
+            26 => Ok(Self::BinaryNot),
+            27 => Ok(Self::Not),
+            28 => Ok(Self::Len),
+            29 => Ok(Self::Concat),
+            30 => Ok(Self::Jmp),
+            31 => Ok(Self::Eq),
+            32 => Ok(Self::Lt),
+            33 => Ok(Self::Le),
+            34 => Ok(Self::Test),
+            35 => Ok(Self::TestSet),
+            36 => Ok(Self::Call),
+            37 => Ok(Self::TailCall),
+            38 => Ok(Self::Return),
+            39 => Ok(Self::ForLoop),
+            40 => Ok(Self::ForPrep),
+            41 => Ok(Self::TForCall),
+            42 => Ok(Self::TForLoop),
+            43 => Ok(Self::SetList),
+            44 => Ok(Self::Closure),
+            45 => Ok(Self::VarArg),
+            46 => Ok(Self::ExtraArg),
             _ => Err(()),
         }
     }

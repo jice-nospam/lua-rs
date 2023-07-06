@@ -1,6 +1,6 @@
 //! Basic library
 
-use crate::{api, lex::str2d, luaL, object::TValue, state::LuaState, LuaRustFunction, LUA_VERSION};
+use crate::{api, lex::str2d, luaL, state::LuaState, LuaRustFunction, LUA_VERSION};
 
 use super::LibReg;
 
@@ -166,7 +166,7 @@ pub fn luab_tonumber(state: &mut LuaState) -> Result<i32, ()> {
     };
     if base == 10 {
         // standard conversion
-        let n = api::to_number(state, 1);
+        let n = luaL::check_number(state, 1)?;
         api::push_number(state, n);
         return Ok(1);
     }
@@ -184,23 +184,9 @@ pub fn luab_tonumber(state: &mut LuaState) -> Result<i32, ()> {
 }
 pub fn luab_tostring(s: &mut LuaState) -> Result<i32, ()> {
     // TODO hangle metamethods
-    match s.index2adr(1) {
-        TValue::Number(_) => {
-            let value = api::to_string(s, 1).unwrap();
-            api::push_string(s, &value);
-        }
-        TValue::String(_) => api::push_value(s, 1),
-        TValue::Boolean(_) => {
-            let value = api::to_boolean(s, 1);
-            api::push_string(s, if value { "true" } else { "false" });
-        }
-        TValue::Nil => api::push_string(s, "nil"),
-        _ => {
-            let ptr = api::to_pointer(s, 1);
-            let value = format!("{} : {:?}", luaL::typename(s, 1), ptr);
-            api::push_string(s, &value);
-        }
-    }
+    let value = s.index2adr(1);
+    let svalue = format!("{}", value);
+    api::push_string(s, &svalue);
     Ok(1)
 }
 pub fn luab_type(_state: &mut LuaState) -> Result<i32, ()> {
@@ -234,14 +220,20 @@ fn pairs_meta(
     Ok(3)
 }
 
+/// 'ipairs' function. Returns 'ipairsaux', given "table", 0.
+/// (The given "table" may not be a table.)
 pub fn luab_ipairs(s: &mut LuaState) -> Result<i32, ()> {
-    pairs_meta(s, "__ipairs", true, ipairs_aux)
+    luaL::check_any(s, 1).map_err(|_| ())?;
+    api::push_rust_function(s, ipairs_aux, 0); // iteration function
+    api::push_value(s, 1); // state
+    api::push_integer(s, 0); // initial value
+    Ok(3)
 }
 pub fn ipairs_aux(s: &mut LuaState) -> Result<i32, ()> {
     let i = luaL::check_integer(s, 2)? + 1; // next value
     luaL::check_table(s, 1)?;
-    api::push_number(s, i as f64);
-    api::raw_get_i(s, 1, i as i32);
+    api::push_integer(s, i);
+    api::raw_get_i(s, 1, i as usize);
     if api::is_nil(s, -1) {
         Ok(1)
     } else {
@@ -313,7 +305,7 @@ mod tests {
         luaL::open_libs(&mut state).unwrap();
         luaL::dostring(&mut state, "a=3 z=_G.a").unwrap();
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(3.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(3));
     }
     #[test]
     fn ipairs() {
@@ -330,7 +322,7 @@ mod tests {
         .unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(10.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(10));
     }
     #[test]
     fn pairs_array() {
@@ -347,7 +339,7 @@ mod tests {
         .unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(10.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(10));
     }
     #[test]
     fn pairs_hash() {
@@ -364,6 +356,6 @@ mod tests {
         .unwrap();
 
         api::get_global(&mut state, "z");
-        assert_eq!(state.stack.last().unwrap(), &TValue::Number(10.0));
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(10));
     }
 }
