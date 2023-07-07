@@ -13,6 +13,7 @@ mod opcodes;
 mod parser;
 pub mod state;
 mod table;
+mod tm;
 mod undump;
 mod vm;
 #[cfg(target_arch = "wasm32")]
@@ -34,7 +35,7 @@ pub use {object::TValue, state::LuaState};
 pub type LuaFloat = f64;
 pub type LuaInteger = i64;
 
-pub type LuaRustFunction = fn(&mut LuaState) -> Result<i32, ()>;
+pub type LuaRustFunction = fn(&mut LuaState) -> Result<i32, LuaError>;
 
 /// lua bytecode dump header
 pub(crate) const LUA_SIGNATURE: &str = "\x1BLua";
@@ -47,7 +48,7 @@ pub const LUA_RIDX_MAINTHREAD: usize = 1;
 pub const LUA_RIDX_GLOBALS: usize = 2;
 // pseudo-indices
 pub const LUA_REGISTRYINDEX: isize = -1000000 - 1000;
-pub const LUA_VERSION: &str = "Lua 5.3.6";
+pub const LUA_VERSION: &str = "Lua 5.4.6";
 
 pub type Reader<T> = fn(&mut LuaState, &T, &mut Vec<char>) -> Result<(), ()>;
 
@@ -121,6 +122,14 @@ mod tests {
         assert_eq!(state.stack.last().unwrap(), &TValue::from("hello"));
     }
     #[test]
+    fn long_string() {
+        let mut state = luaL::newstate();
+        luaL::dostring(&mut state, "a=[[hello\nworld]]").unwrap();
+
+        api::get_global(&mut state, "a");
+        assert_eq!(state.stack.last().unwrap(), &TValue::from("hello\nworld"));
+    }
+    #[test]
     fn global_bool() {
         let mut state = luaL::newstate();
         luaL::dostring(&mut state, "a=true;b=false").unwrap();
@@ -145,6 +154,22 @@ mod tests {
 
         api::get_global(&mut state, "z");
         assert_eq!(state.stack.last().unwrap(), &TValue::Integer(7));
+    }
+    #[test]
+    fn div() {
+        let mut state = luaL::newstate();
+        luaL::dostring(&mut state, "a=7.0;b=2.0;z=a/b").unwrap();
+
+        api::get_global(&mut state, "z");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Float(3.5));
+    }
+    #[test]
+    fn intdiv() {
+        let mut state = luaL::newstate();
+        luaL::dostring(&mut state, "a=7.0;b=2.0;z=a//b").unwrap();
+
+        api::get_global(&mut state, "z");
+        assert_eq!(state.stack.last().unwrap(), &TValue::Integer(3));
     }
     #[test]
     fn func() {

@@ -4,9 +4,9 @@ use crate::{
     api::LuaError,
     luaG, luaU, luaY, luaZ,
     luaconf::LUAI_MAXRCALLS,
-    object::{Closure, ProtoId, StkId, TValue},
-    state::{CallInfo, LuaState, CIST_LUA},
-    LUA_MINSTACK, LUA_SIGNATURE,
+    object::{Closure, StkId, TValue},
+    state::{CallInfo, LuaState, CIST_FRESH, CIST_RUST, CIST_TAIL},
+    LUA_MINSTACK, LUA_MULTRET, LUA_SIGNATURE,
 };
 
 /// type of protected functions, to be ran by `runprotected'
@@ -76,6 +76,7 @@ impl LuaState {
         if self.stack[cl_stkid].is_function() {
             if let PrecallStatus::Lua = self.dprecall(cl_stkid, nresults)? {
                 // is a Lua function ?
+                self.base_ci[self.ci].call_status |= CIST_FRESH; // mark that it is a "fresh" execute
                 self.vexecute()?; // call it
             }
         }
@@ -83,11 +84,12 @@ impl LuaState {
         Ok(())
     }
 
-    /// Prepares a function call: checks the stack, creates a new CallInfo
-    /// entry, fills in the relevant information, calls hook if needed.
-    /// If function is a Rust function, does the call, too. (Otherwise, leave
-    /// the execution ('LuaState::vexecute') to the caller, to allow stackless
-    /// calls.)
+    /// Prepares the call to a function (C or Lua). For C functions, also do
+    /// the call. The function to be called is at 'func'.  The arguments
+    /// are on the stack, right after the function.  Creates the CallInfo
+    /// to be executed, if it was a Lua function. Otherwise (a Rust function)
+    /// returns with all the results on the stack, starting at the
+    /// original function position.
     pub(crate) fn dprecall(
         &mut self,
         func: StkId,
@@ -108,65 +110,106 @@ impl LuaState {
         match &*cl {
             Closure::Lua(cl) => {
                 // Lua function. prepare its call
-                let nargs = self.stack.len() - func - 1;
-                let base = if self.protos[cl.proto].is_vararg {
-                    // vararg function
-                    self.adjust_varargs(cl.proto, nargs)
-                } else {
-                    // no varargs
-                    let numparams = self.protos[cl.proto].numparams;
-                    for _ in nargs..numparams {
-                        self.stack.push(TValue::Nil);
-                    }
-                    func + 1
-                };
+                let nargs = self.stack.len() - func - 1; // number of real arguments
+                let n_fix_params = self.protos[cl.proto].numparams;
+                let frame_size = self.protos[cl.proto].maxstacksize;
                 let ci = CallInfo {
                     func,
-                    base,
-                    top: base + self.protos[cl.proto].maxstacksize,
+                    top: func + 1 + frame_size,
                     nresults,
-                    call_status: CIST_LUA,
                     ..Default::default()
                 };
-                self.stack.resize(ci.top, TValue::Nil);
+                // complete missing arguments
+                for _ in nargs..n_fix_params {
+                    self.stack.push(TValue::Nil);
+                }
                 self.base_ci.push(ci);
                 self.ci += 1;
-                // TODO handle hooks
                 Ok(PrecallStatus::Lua)
             }
             Closure::Rust(cl) => {
                 // this is a Rust function, call it
-                let ci = CallInfo {
-                    func,
-                    top: self.stack.len() + LUA_MINSTACK,
-                    nresults,
-                    ..Default::default()
-                };
-                self.base_ci.push(ci);
-                self.ci += 1;
-                // TODO handle hooks
-                let n = (cl.f)(self).map_err(|_| LuaError::RuntimeError)?; // do the actual call
-                self.poscall(self.stack.len() - n as usize, n as usize);
+                self.precall_rust(func, nresults, cl)?;
                 Ok(PrecallStatus::Rust)
             }
         }
     }
 
-    pub(crate) fn adjust_varargs(&mut self, proto: ProtoId, nargs: usize) -> usize {
-        let nfix_args = self.protos[proto].numparams;
-        for _ in nargs..nfix_args {
-            self.stack.push(TValue::Nil);
-        }
-        // move fixed parameters to final position
-        let base = self.stack.len(); // final position of first argument
-        let fixed_pos = base - nargs; // first fixed argument
-        for i in 0..nfix_args {
-            let value = self.stack.remove(fixed_pos + i);
-            self.stack.insert(fixed_pos + i, TValue::Nil);
-            self.stack.push(value);
-        }
-        base
+    /// precall for rust functions
+    fn precall_rust(
+        &mut self,
+        func: usize,
+        nresults: i32,
+        cl: &crate::object::RClosure,
+    ) -> Result<i32, LuaError> {
+        let ci = CallInfo {
+            func,
+            top: self.stack.len() + LUA_MINSTACK,
+            nresults,
+            call_status: CIST_RUST,
+            ..Default::default()
+        };
+        self.base_ci.push(ci);
+        self.ci += 1;
+        // TODO handle hooks
+        let n = (cl.f)(self).map_err(|_| LuaError::RuntimeError)?;
+        // do the actual call
+
+        self.poscall(n)?;
+        Ok(n)
     }
+
+    /// Prepare a function for a tail call, building its call info on top
+    /// of the current call info. 'narg1' is the number of arguments plus 1
+    /// (so that it includes the function itself). Return the number of
+    /// results, if it was a C function, or -1 for a Lua function.
+    pub(crate) fn dpre_tailcall(
+        &mut self,
+        func: usize,
+        narg1: usize,
+        delta: usize,
+        nresults: &mut i32,
+    ) -> Result<crate::luaD::PrecallStatus, LuaError> {
+        let func = match &self.stack[func] {
+            TValue::Function(_) => func,
+            _ => {
+                // func' is not a function. check the `function' metamethod
+                // TODO
+                //self.try_func_tag_method(cl_stkid)?
+                luaG::type_error(self, func, "call")?;
+                unreachable!()
+            }
+        };
+        let cl = self.get_closure_ref(func);
+        let cl = cl.borrow();
+        match &*cl {
+            Closure::Lua(cl) => {
+                let frame_size = self.protos[cl.proto].maxstacksize;
+                let n_fix_params = self.protos[cl.proto].numparams;
+                self.base_ci[self.ci].func -= delta; // restore func (if vararg)
+                let new_func = self.base_ci[self.ci].func;
+                for i in 0..narg1 {
+                    // move down function and arguments
+                    self.set_stack_from_idx(new_func + 1, func + i);
+                }
+                let new_func = self.base_ci[self.ci].func;
+                for i in narg1..n_fix_params {
+                    // complete missing arguments
+                    self.set_stack_from_value(new_func + i, TValue::Nil);
+                }
+                self.base_ci[self.ci].top = new_func + 1 + frame_size;
+                self.base_ci[self.ci].saved_pc = 0; // starting point
+                self.base_ci[self.ci].call_status |= CIST_TAIL;
+                self.stack.resize(new_func + narg1, TValue::Nil);
+                Ok(PrecallStatus::Lua)
+            }
+            Closure::Rust(cl) => {
+                *nresults = self.precall_rust(func, LUA_MULTRET, cl)?;
+                Ok(PrecallStatus::Rust)
+            }
+        }
+    }
+
     pub(crate) fn _try_func_tag_method(&self, _cl_stkid: StkId) -> Result<StkId, LuaError> {
         todo!()
     }

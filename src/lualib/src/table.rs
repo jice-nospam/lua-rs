@@ -34,6 +34,14 @@ impl Table {
             node: HashMap::new(),
         }
     }
+    pub fn with_capacity(narr: usize, nrec: usize) -> Self {
+        Self {
+            flags: !0,
+            metatable: None,
+            array: Vec::with_capacity(narr),
+            node: HashMap::with_capacity(nrec),
+        }
+    }
 
     /// Try to find a boundary in table `t'. A `boundary' is an integer index
     /// such that t[i] is non-nil and t[i+1] is nil (and 0 if t[1] is nil).
@@ -143,7 +151,7 @@ impl Table {
                         return (k.clone(), self.node.get(k).unwrap().clone());
                     }
                 }
-                return (TValue::Nil, TValue::Nil);
+                (TValue::Nil, TValue::Nil)
             }
             TValue::Float(idx) => {
                 if idx.fract() == 0.0 && *idx >= 0.0 {
@@ -172,7 +180,7 @@ impl Table {
                         return (k.clone(), self.node.get(k).unwrap().clone());
                     }
                 }
-                return (TValue::Nil, TValue::Nil);
+                (TValue::Nil, TValue::Nil)
             }
             _ => {
                 let mut found = false;
@@ -183,7 +191,7 @@ impl Table {
                         return (k.clone(), self.node.get(k).unwrap().clone());
                     }
                 }
-                return (TValue::Nil, TValue::Nil);
+                (TValue::Nil, TValue::Nil)
             }
         }
     }

@@ -3,22 +3,86 @@
 use std::{cell::RefCell, rc::Rc};
 
 use crate::{
-    api,
     api::LuaError,
+    debug::{for_error, order_error},
     luaD::PrecallStatus,
     luaG,
-    luaK::arith,
-    object::{Closure, LClosure, StkId, TValue},
+    object::{Closure, LClosure, TValue},
     opcodes::{
-        get_arg_a, get_arg_ax, get_arg_b, get_arg_bx, get_arg_c, get_arg_sbx, get_opcode, OpCode,
-        LFIELDS_PER_FLUSH,
+        get_arg_a, get_arg_ax, get_arg_b, get_arg_bx, get_arg_c, get_arg_k, get_arg_sb,
+        get_arg_sbx, get_arg_sc, get_arg_sj, get_opcode, OpCode, MAXARG_C,
     },
-    state::{LuaState, CIST_FRESH, CIST_LUA, CIST_TAIL},
-    LuaInteger, LUA_MULTRET,
+    state::{LuaState, CIST_FRESH},
+    LuaFloat, LuaInteger,
 };
 
 #[cfg(feature = "debug_logs")]
 use crate::{limits::Instruction, opcodes::OPCODE_NAME};
+
+pub(crate) const CLOSEKTOP: i32 = -1;
+
+macro_rules! op_arith {
+    ($s:expr, $ra: expr, $v1:expr, $v2:expr, $op: tt, $pc: expr) => {
+        if let (TValue::Integer(iv1), TValue::Integer(iv2)) = ($v1, &$v2) {
+            $pc += 1;
+            $s.set_stack_from_value(
+                $ra,TValue::Integer(iv1 $op iv2));
+        } else if let (Some(f1), Some(f2)) = ($v1.into_float_ns(), $v2.into_float_ns()) {
+            $pc += 1;
+            $s.set_stack_from_value(
+                $ra,TValue::Float(f1 $op f2));
+        } else {
+            () // need coercion. will be handled by MMBINx instruction
+        }
+    };
+}
+
+macro_rules! op_order {
+    ($s:expr, $v1: expr, $v2:expr, $op: tt, $i:expr, $protoid: expr,$pc: expr) => {
+        {
+            let mut ok=true;
+            let cond=if let (TValue::Integer(ia),TValue::Integer(ib)) = ($v1,$v2) {
+                ia $op ib
+            } else if let (TValue::Float(fa),TValue::Float(fb)) = ($v1,$v2) {
+                fa $op fb
+            } else if let (TValue::String(sa),TValue::String(sb)) = ($v1,$v2) {
+                sa $op sb
+            } else {
+                // TODO metamethods
+                ok=false;
+                false
+            };
+            if ok {
+                if cond != (get_arg_k($i)==1) {
+                    *$pc += 1;
+                } else {
+                    $s.do_next_jump($protoid,$pc);
+                }
+            }
+            ok
+        }
+    };
+}
+
+macro_rules! op_order_i {
+    ($s:expr, $v1: expr, $v2:expr, $op: tt, $i:expr, $protoid: expr,$pc: expr) => {
+        {
+            let cond=if let TValue::Integer(ia) = $v1 {
+                *ia $op $v2
+            } else if let TValue::Float(fa) = $v1 {
+                *fa $op $v2 as LuaFloat
+            } else {
+                // TODO metamethod
+                todo!()
+            };
+            if cond != (get_arg_k($i)==1) {
+                *$pc += 1;
+            } else {
+                $s.do_next_jump($protoid,$pc);
+            }
+        }
+    };
+}
 
 impl LuaState {
     #[cfg(feature = "debug_logs")]
@@ -31,297 +95,637 @@ impl LuaState {
     }
 
     pub(crate) fn vexecute(&mut self) -> Result<(), LuaError> {
-        self.base_ci[self.ci].call_status |= CIST_FRESH;
         'new_frame: loop {
             let func = self.base_ci[self.ci].func;
             let protoid = self.get_lua_closure_protoid(func);
-            let mut base = self.base_ci[self.ci].base as u32;
+            let mut pc = self.base_ci[self.ci].saved_pc;
             #[cfg(feature = "debug_logs")]
             let mut first = true;
             // main loop of interpreter
             loop {
-                let pc = self.base_ci[self.ci].saved_pc;
+                let base = self.base_ci[self.ci].func as u32 + 1;
                 let i = self.get_instruction(protoid, pc);
                 #[cfg(feature = "debug_logs")]
                 {
                     self.dump_debug_log(func, first, pc, i);
                     first = false;
                 }
-                self.base_ci[self.ci].saved_pc += 1;
+                pc += 1;
                 // TODO handle hooks
                 let ra = base + get_arg_a(i);
-                debug_assert!(base == self.base_ci[self.ci].base as u32);
+                debug_assert!(base <= self.stack.len() as u32);
                 match get_opcode(i) {
-                    OpCode::BinaryAnd => {
-                        let rb = self.get_rkb(i, base, protoid);
-                        let rc = self.get_rkc(i, base, protoid);
-                        self.set_stack_from_value(ra as usize, arith(OpCode::BinaryAnd, &rb, &rc));
-                    }
-                    OpCode::BinaryOr => {
-                        let rb = self.get_rkb(i, base, protoid);
-                        let rc = self.get_rkc(i, base, protoid);
-                        self.set_stack_from_value(ra as usize, arith(OpCode::BinaryOr, &rb, &rc));
-                    }
-                    OpCode::BinaryXor => {
-                        let rb = self.get_rkb(i, base, protoid);
-                        let rc = self.get_rkc(i, base, protoid);
-                        self.set_stack_from_value(ra as usize, arith(OpCode::BinaryXor, &rb, &rc));
-                    }
-                    OpCode::Shl => {
-                        let rb = self.get_rkb(i, base, protoid);
-                        let rc = self.get_rkc(i, base, protoid);
-                        self.set_stack_from_value(ra as usize, arith(OpCode::Shl, &rb, &rc));
-                    }
-                    OpCode::Shr => {
-                        let rb = self.get_rkb(i, base, protoid);
-                        let rc = self.get_rkc(i, base, protoid);
-                        self.set_stack_from_value(ra as usize, arith(OpCode::Shr, &rb, &rc));
-                    }
-                    OpCode::IntegerDiv => {
-                        let rb = self.get_rkb(i, base, protoid);
-                        let rc = self.get_rkc(i, base, protoid);
-                        self.set_stack_from_value(ra as usize, arith(OpCode::IntegerDiv, &rb, &rc));
-                    }
-                    OpCode::BinaryNot => {
-                        let rb = get_rb(base, i);
-                        let rb = &self.stack[rb];
-                        self.set_stack_from_value(ra as usize, arith(OpCode::BinaryNot, rb, rb));
-                    }
                     OpCode::Move => {
+                        let ra = get_ra(base, i);
                         let rb = get_rb(base, i);
-                        let rai = ra as usize;
-                        self.set_or_push(rai, self.stack[rb].clone());
+                        self.set_stack_from_idx(ra, rb);
+                    }
+                    OpCode::LoadI => {
+                        let ra = get_ra(base, i);
+                        let b = get_arg_sbx(i) as LuaInteger;
+                        self.set_stack_from_value(ra, TValue::Integer(b));
+                    }
+                    OpCode::LoadF => {
+                        let ra = get_ra(base, i);
+                        let b = get_arg_sbx(i) as LuaFloat;
+                        self.set_stack_from_value(ra, TValue::Float(b));
                     }
                     OpCode::LoadK => {
+                        let ra = get_ra(base, i);
                         let kid = get_arg_bx(i);
                         let kval = self.get_lua_constant(protoid, kid as usize);
-                        let rai = ra as usize;
-                        self.set_or_push(rai, kval.clone());
+                        self.set_stack_from_value(ra, kval);
                     }
                     OpCode::LoadKx => {
-                        let ci_pc = self.base_ci[self.ci].saved_pc;
-                        let ci_inst = self.get_instruction(protoid, ci_pc);
-                        debug_assert!(get_opcode(ci_inst) == OpCode::ExtraArg);
-                        let kid = get_arg_ax(ci_inst);
-                        self.base_ci[self.ci].saved_pc += 1;
+                        let ra = get_ra(base, i);
+                        let i2 = self.get_instruction(protoid, pc);
+                        let kid = get_arg_ax(i2);
+                        pc += 1;
                         let kval = self.get_lua_constant(protoid, kid as usize);
-                        let rai = ra as usize;
-                        self.set_or_push(rai, kval.clone());
+                        self.set_stack_from_value(ra, kval);
                     }
-                    OpCode::LoadBool => {
-                        let b = get_arg_b(i);
-                        self.set_stack_from_value(ra as usize, TValue::Boolean(b != 0));
-                        let c = get_arg_c(i);
-                        if c != 0 {
-                            self.base_ci[self.ci].saved_pc += 1; // skip next instruction (if C)
-                        }
+                    OpCode::LoadFalse => {
+                        let ra = get_ra(base, i);
+                        self.set_stack_from_value(ra, TValue::Boolean(false));
+                    }
+                    OpCode::LoadFalseSkip => {
+                        let ra = get_ra(base, i);
+                        self.set_stack_from_value(ra, TValue::Boolean(false));
+                        pc += 1; // skip next instruction
+                    }
+                    OpCode::LoadTrue => {
+                        let ra = get_ra(base, i);
+                        self.set_stack_from_value(ra, TValue::Boolean(true));
                     }
                     OpCode::LoadNil => {
+                        let mut ra = get_ra(base, i);
                         let mut b = get_arg_b(i);
-                        let mut ra = ra;
                         while b > 0 {
-                            self.set_stack_from_value(ra as usize, TValue::Nil);
+                            self.set_stack_from_value(ra, TValue::Nil);
                             ra += 1;
                             b -= 1;
                         }
                     }
                     OpCode::GetUpVal => {
+                        let ra = get_ra(base, i);
                         let b = get_arg_b(i);
                         self.set_stack_from_value(
-                            ra as usize,
+                            ra,
                             self.get_lua_closure_upvalue(func, b as usize),
                         );
                     }
-                    OpCode::GetTabUp => {
+                    OpCode::SetupVal => {
+                        let ra = get_ra(base, i);
                         let b = get_arg_b(i);
-                        let key = self.get_rkc(i, base, protoid);
+                        self.set_lua_closure_upvalue(func, b as usize, self.stack[ra].clone());
+                    }
+                    OpCode::GetTabUp => {
+                        let ra = get_ra(base, i);
+                        let b = get_arg_b(i);
+                        let key = self.get_kc(i, protoid);
                         let table = self.get_lua_closure_upvalue(func, b as usize);
-                        Self::get_tablev2(&mut self.stack, &table, &key, Some(ra as usize));
-                        base = self.base_ci[self.ci].base as u32;
+                        // TODO metamethod
+                        Self::get_tablev2(&mut self.stack, &table, &key, Some(ra));
                     }
                     OpCode::GetTable => {
+                        let ra = get_ra(base, i);
                         let tableid = get_rb(base, i);
-                        let key = self.get_rkc(i, base, protoid);
-                        Self::get_tablev(&mut self.stack, tableid, &key, Some(ra as usize));
-                        base = self.base_ci[self.ci].base as u32;
+                        let rc = get_rc(base, i);
+                        // TODO metamethod
+                        self.get_table_value(tableid, rc, ra);
+                    }
+                    OpCode::GetI => {
+                        let ra = get_ra(base, i);
+                        let tableid: usize = get_rb(base, i);
+                        let c = get_arg_c(i) as LuaInteger;
+                        // TODO metamethod
+                        self.get_table_value_by_key(tableid, &TValue::Integer(c), ra);
+                    }
+                    OpCode::GetField => {
+                        let ra = get_ra(base, i);
+                        let tableid = get_rb(base, i);
+                        let key = self.get_kc(i, protoid);
+                        // TODO metamethod
+                        self.get_table_value_by_key(tableid, &key, ra);
                     }
                     OpCode::SetTabUp => {
                         let a = get_arg_a(i);
-                        let key = self.get_rkb(i, base, protoid);
+                        let key = self.get_kb(i, protoid);
                         let val = self.get_rkc(i, base, protoid);
                         let table = self.get_lua_closure_upvalue(func, a as usize);
+                        // TODO metamethod
                         self.set_tablev(&table, key, val);
-                        base = self.base_ci[self.ci].base as u32;
-                    }
-                    OpCode::SetupVal => {
-                        let b = get_arg_b(i);
-                        self.set_lua_closure_upvalue(
-                            func,
-                            b as usize,
-                            self.stack[ra as usize].clone(),
-                        );
                     }
                     OpCode::SetTable => {
-                        let key = self.get_rkb(i, base, protoid);
+                        let ra = get_ra(base, i);
+                        let rb = get_rb(base, i);
+                        let key = self.stack[rb].clone();
                         let value = self.get_rkc(i, base, protoid);
-                        self.set_tablev(&self.stack[ra as usize], key, value);
-                        base = self.base_ci[self.ci].base as u32;
+                        // TODO metamethod
+                        self.set_tablev(&self.stack[ra], key, value);
+                    }
+                    OpCode::SetI => {
+                        let ra = get_ra(base, i);
+                        let c = get_arg_c(i) as LuaInteger;
+                        let rkc = self.get_rkc(i, base, protoid);
+                        // TODO metamethod
+                        self.set_tablev(&self.stack[ra], TValue::Integer(c), rkc);
+                    }
+                    OpCode::SetField => {
+                        let ra = get_ra(base, i);
+                        let rb = self.get_kb(i, protoid);
+                        let rkc = self.get_rkc(i, base, protoid);
+                        // TODO metamethod
+                        self.set_tablev(&self.stack[ra], rb, rkc);
                     }
                     OpCode::NewTable => {
-                        self.set_stack_from_value(ra as usize, TValue::new_table());
+                        let ra = get_ra(base, i);
+                        self.set_stack_from_value(ra, TValue::new_table());
                     }
                     OpCode::OpSelf => {
+                        let ra = get_ra(base, i);
                         let rb = get_rb(base, i);
-                        self.set_stack_from_idx(ra as usize + 1, rb as usize);
-                        let key = self.get_rkc(i, base, protoid);
-                        Self::get_tablev(&mut self.stack, rb, &key, Some(ra as usize));
-                        base = self.base_ci[self.ci].base as u32;
+                        let rc = self.get_rkc(i, base, protoid);
+                        self.set_stack_from_idx(ra + 1, rb);
+                        // TODO metamethod
+                        Self::get_tablev(&mut self.stack, rb, &rc, Some(ra));
+                    }
+                    OpCode::AddI => {
+                        let ra = get_ra(base, i);
+                        let v1 = get_rb(base, i);
+                        let imm = get_arg_sc(i) as LuaInteger;
+                        pc += 1;
+                        self.set_stack_from_value(
+                            ra,
+                            match &self.stack[v1] {
+                                TValue::Integer(iv1) => TValue::Integer(iv1 + imm),
+                                TValue::Float(fv1) => TValue::Float(fv1 + imm as LuaFloat),
+                                _ => unreachable!(),
+                            },
+                        );
+                    }
+                    OpCode::AddK => {
+                        let v1 = &self.stack[get_rb(base, i)];
+                        let v2 = self.get_kc(i, protoid);
+                        debug_assert!(v2.is_number());
+                        let ra = get_ra(base, i);
+                        op_arith!(self, ra, v1, v2, +, pc);
+                    }
+                    OpCode::SubK => {
+                        let v1 = &self.stack[get_rb(base, i)];
+                        let v2 = self.get_kc(i, protoid);
+                        debug_assert!(v2.is_number());
+                        let ra = get_ra(base, i);
+                        op_arith!(self, ra, v1, v2, -, pc);
+                    }
+                    OpCode::MulK => {
+                        let v1 = &self.stack[get_rb(base, i)];
+                        let v2 = self.get_kc(i, protoid);
+                        debug_assert!(v2.is_number());
+                        let ra = get_ra(base, i);
+                        op_arith!(self, ra, v1, v2, *, pc);
+                    }
+                    OpCode::ModK => {
+                        self.save_state(pc); // in case of division by 0
+                        let v2 = self.get_kc(i, protoid);
+                        debug_assert!(v2.is_number());
+                        if v2.is_integer() && v2.get_integer_value() == 0 {
+                            self.run_error("attempt to perform 'n%0'")?;
+                        }
+                        let v1 = &self.stack[get_rb(base, i)];
+                        let ra = get_ra(base, i);
+                        pc += 1;
+                        let value = if let (TValue::Integer(iv1), TValue::Integer(iv2)) = (v1, &v2)
+                        {
+                            TValue::Integer(iv1 % iv2)
+                        } else if let (Some(f1), Some(f2)) =
+                            (v1.into_float_ns(), v2.into_float_ns())
+                        {
+                            TValue::Float(f1 % f2)
+                        } else {
+                            unreachable!()
+                        };
+                        self.set_stack_from_value(ra, value);
+                    }
+                    OpCode::PowK => {
+                        let v1 = &self.stack[get_rb(base, i)];
+                        let v2 = self.get_kc(i, protoid);
+                        debug_assert!(v2.is_number());
+                        let ra = get_ra(base, i);
+                        pc += 1;
+                        let value = if let (Some(f1), Some(f2)) =
+                            (v1.into_float_ns(), v2.into_float_ns())
+                        {
+                            TValue::Float(f1.powf(f2))
+                        } else {
+                            unreachable!()
+                        };
+                        self.set_stack_from_value(ra, value);
+                    }
+                    OpCode::DivK => {
+                        let v1 = &self.stack[get_rb(base, i)];
+                        let v2 = self.get_kc(i, protoid);
+                        debug_assert!(v2.is_number());
+                        let ra = get_ra(base, i);
+                        pc += 1;
+                        let value = if let (Some(f1), Some(f2)) =
+                            (v1.into_float_ns(), v2.into_float_ns())
+                        {
+                            TValue::Float(f1 / f2)
+                        } else {
+                            unreachable!()
+                        };
+                        self.set_stack_from_value(ra, value);
+                    }
+                    OpCode::IntegerDivK => {
+                        self.save_state(pc); // in case of division by 0
+                        let v2 = self.get_kc(i, protoid);
+                        if v2.is_integer() && v2.get_integer_value() == 0 {
+                            self.run_error("attempt to divide by zero")?;
+                        }
+                        let v1 = &self.stack[get_rb(base, i)];
+                        debug_assert!(v2.is_number());
+                        let ra = get_ra(base, i);
+                        pc += 1;
+                        let value = if let (TValue::Integer(iv1), TValue::Integer(iv2)) = (v1, &v2)
+                        {
+                            TValue::Integer(iv1 / iv2)
+                        } else if let (Some(f1), Some(f2)) =
+                            (v1.into_float_ns(), v2.into_float_ns())
+                        {
+                            TValue::Float((f1 / f2).floor())
+                        } else {
+                            unreachable!()
+                        };
+                        self.set_stack_from_value(ra, value);
+                    }
+                    OpCode::BinaryAndK => {
+                        let ra = get_ra(base, i);
+                        let v1 = &self.stack[get_rb(base, i)];
+                        let v2 = self.get_kc(i, protoid);
+                        let i2 = v2.get_integer_value();
+                        if let Some(i1) = v1.into_integer_ns() {
+                            pc += 1;
+                            self.set_stack_from_value(ra, TValue::Integer(i1 & i2));
+                        }
+                    }
+                    OpCode::BinaryOrK => {
+                        let ra = get_ra(base, i);
+                        let v1 = &self.stack[get_rb(base, i)];
+                        let v2 = self.get_kc(i, protoid);
+                        let i2 = v2.get_integer_value();
+                        if let Some(i1) = v1.into_integer_ns() {
+                            pc += 1;
+                            self.set_stack_from_value(ra, TValue::Integer(i1 | i2));
+                        }
+                    }
+                    OpCode::BinaryXorK => {
+                        let ra = get_ra(base, i);
+                        let v1 = &self.stack[get_rb(base, i)];
+                        let v2 = self.get_kc(i, protoid);
+                        let i2 = v2.get_integer_value();
+                        if let Some(i1) = v1.into_integer_ns() {
+                            pc += 1;
+                            self.set_stack_from_value(ra, TValue::Integer(i1 ^ i2));
+                        }
+                    }
+                    OpCode::ShrI => {
+                        let ra = get_ra(base, i);
+                        let v1 = &self.stack[get_rb(base, i)];
+                        let v2 = get_arg_sc(i);
+                        if let Some(i1) = v1.into_integer_ns() {
+                            pc += 1;
+                            self.set_stack_from_value(ra, TValue::Integer(i1 >> v2));
+                        }
+                    }
+                    OpCode::ShlI => {
+                        let ra = get_ra(base, i);
+                        let v1 = &self.stack[get_rb(base, i)];
+                        let v2 = get_arg_sc(i);
+                        if let Some(i1) = v1.into_integer_ns() {
+                            pc += 1;
+                            self.set_stack_from_value(ra, TValue::Integer(i1 << v2));
+                        }
                     }
                     OpCode::Add => {
-                        let rb = self.get_rkb(i, base, protoid);
-                        let rc = self.get_rkc(i, base, protoid);
-                        self.set_stack_from_value(ra as usize, arith(OpCode::Add, &rb, &rc));
+                        let ra = get_ra(base, i);
+                        let rb = get_rb(base, i);
+                        let rc = get_rc(base, i);
+                        op_arith!(self, ra, &self.stack[rb],&self.stack[rc], +, pc);
                     }
                     OpCode::Sub => {
-                        let rb = self.get_rkb(i, base, protoid);
-                        let rc = self.get_rkc(i, base, protoid);
-                        self.set_stack_from_value(ra as usize, arith(OpCode::Sub, &rb, &rc));
+                        let ra = get_ra(base, i);
+                        let rb = get_rb(base, i);
+                        let rc = get_rc(base, i);
+                        op_arith!(self, ra, &self.stack[rb],&self.stack[rc], -, pc);
                     }
                     OpCode::Mul => {
-                        let rb = self.get_rkb(i, base, protoid);
-                        let rc = self.get_rkc(i, base, protoid);
-                        self.set_stack_from_value(ra as usize, arith(OpCode::Mul, &rb, &rc));
-                    }
-                    OpCode::Div => {
-                        let rb = self.get_rkb(i, base, protoid);
-                        let rc = self.get_rkc(i, base, protoid);
-                        self.set_stack_from_value(ra as usize, arith(OpCode::Div, &rb, &rc));
+                        let ra = get_ra(base, i);
+                        let rb = get_rb(base, i);
+                        let rc = get_rc(base, i);
+                        op_arith!(self, ra, &self.stack[rb],&self.stack[rc], *, pc);
                     }
                     OpCode::Mod => {
-                        let rb = self.get_rkb(i, base, protoid);
-                        let rc = self.get_rkc(i, base, protoid);
-                        self.set_stack_from_value(ra as usize, arith(OpCode::Mod, &rb, &rc));
+                        self.save_state(pc); // in case of division by 0
+                        let ra = get_ra(base, i);
+                        let rb = get_rb(base, i);
+                        let rc = get_rc(base, i);
+                        if self.stack[rc].is_integer() && self.stack[rc].get_integer_value() == 0 {
+                            self.run_error("attempt to perform 'n%0'")?;
+                        }
+                        let v1 = &self.stack[rb];
+                        let v2 = &self.stack[rc];
+                        pc += 1;
+                        let value = if let (TValue::Integer(iv1), TValue::Integer(iv2)) = (v1, &v2)
+                        {
+                            TValue::Integer(iv1 % iv2)
+                        } else if let (Some(f1), Some(f2)) =
+                            (v1.into_float_ns(), v2.into_float_ns())
+                        {
+                            TValue::Float(f1 % f2)
+                        } else {
+                            unreachable!()
+                        };
+                        self.set_stack_from_value(ra, value);
                     }
                     OpCode::Pow => {
-                        let rb = self.get_rkb(i, base, protoid);
-                        let rc = self.get_rkc(i, base, protoid);
-                        self.set_stack_from_value(ra as usize, arith(OpCode::Pow, &rb, &rc));
+                        let ra = get_ra(base, i);
+                        let rb = get_rb(base, i);
+                        let rc = get_rc(base, i);
+                        let v1 = &self.stack[rb];
+                        let v2 = &self.stack[rc];
+                        pc += 1;
+                        let value = if let (Some(f1), Some(f2)) =
+                            (v1.into_float_ns(), v2.into_float_ns())
+                        {
+                            TValue::Float(f1.powf(f2))
+                        } else {
+                            unreachable!()
+                        };
+                        self.set_stack_from_value(ra, value);
+                    }
+                    OpCode::Div => {
+                        let ra = get_ra(base, i);
+                        let rb = get_rb(base, i);
+                        let rc = get_rc(base, i);
+                        let v1 = &self.stack[rb];
+                        let v2 = &self.stack[rc];
+                        pc += 1;
+                        let value = if let (Some(f1), Some(f2)) =
+                            (v1.into_float_ns(), v2.into_float_ns())
+                        {
+                            TValue::Float(f1 / f2)
+                        } else {
+                            unreachable!()
+                        };
+                        self.set_stack_from_value(ra, value);
+                    }
+                    OpCode::IntegerDiv => {
+                        self.save_state(pc); // in case of division by 0
+                        let ra = get_ra(base, i);
+                        let rb = get_rb(base, i);
+                        let rc = get_rc(base, i);
+                        if self.stack[rc].is_integer() && self.stack[rc].get_integer_value() == 0 {
+                            self.run_error("attempt to divide by zero")?;
+                        }
+                        let v1 = &self.stack[rb];
+                        let v2 = &self.stack[rc];
+                        pc += 1;
+                        let value = if let (TValue::Integer(iv1), TValue::Integer(iv2)) = (v1, &v2)
+                        {
+                            TValue::Integer(iv1 / iv2)
+                        } else if let (Some(f1), Some(f2)) =
+                            (v1.into_float_ns(), v2.into_float_ns())
+                        {
+                            TValue::Float((f1 / f2).floor())
+                        } else {
+                            unreachable!()
+                        };
+                        self.set_stack_from_value(ra, value);
+                    }
+                    OpCode::BinaryAnd => {
+                        let ra = get_ra(base, i);
+                        let v1 = &self.stack[get_rb(base, i)];
+                        let v2 = &self.stack[get_rc(base, i)];
+                        if let (Some(i1), Some(i2)) = (v1.into_integer_ns(), v2.into_integer_ns()) {
+                            pc += 1;
+                            self.set_stack_from_value(ra, TValue::Integer(i1 & i2));
+                        }
+                    }
+                    OpCode::BinaryOr => {
+                        let ra = get_ra(base, i);
+                        let v1 = &self.stack[get_rb(base, i)];
+                        let v2 = &self.stack[get_rc(base, i)];
+                        if let (Some(i1), Some(i2)) = (v1.into_integer_ns(), v2.into_integer_ns()) {
+                            pc += 1;
+                            self.set_stack_from_value(ra, TValue::Integer(i1 | i2));
+                        }
+                    }
+                    OpCode::BinaryXor => {
+                        let ra = get_ra(base, i);
+                        let v1 = &self.stack[get_rb(base, i)];
+                        let v2 = &self.stack[get_rc(base, i)];
+                        if let (Some(i1), Some(i2)) = (v1.into_integer_ns(), v2.into_integer_ns()) {
+                            pc += 1;
+                            self.set_stack_from_value(ra, TValue::Integer(i1 ^ i2));
+                        }
+                    }
+                    OpCode::Shr => {
+                        let ra = get_ra(base, i);
+                        let v1 = &self.stack[get_rb(base, i)];
+                        let v2 = &self.stack[get_rc(base, i)];
+                        if let (Some(i1), Some(i2)) = (v1.into_integer_ns(), v2.into_integer_ns()) {
+                            pc += 1;
+                            self.set_stack_from_value(ra, TValue::Integer(i1 >> i2));
+                        }
+                    }
+                    OpCode::Shl => {
+                        let ra = get_ra(base, i);
+                        let v1 = &self.stack[get_rb(base, i)];
+                        let v2 = &self.stack[get_rc(base, i)];
+                        if let (Some(i1), Some(i2)) = (v1.into_integer_ns(), v2.into_integer_ns()) {
+                            pc += 1;
+                            self.set_stack_from_value(ra, TValue::Integer(i1 << i2));
+                        }
+                    }
+                    OpCode::MMBin => {
+                        todo!()
+                    }
+                    OpCode::MMBinI => {
+                        todo!()
+                    }
+                    OpCode::MMBinK => {
+                        todo!()
                     }
                     OpCode::UnaryMinus => {
-                        let rb = get_rb(base, i);
-                        let rb = &self.stack[rb];
-                        self.set_stack_from_value(ra as usize, arith(OpCode::UnaryMinus, rb, rb));
+                        let ra = get_ra(base, i);
+                        let vrb = &self.stack[get_rb(base, i)];
+                        if let TValue::Integer(irb) = vrb {
+                            self.set_stack_from_value(ra, TValue::Integer(-irb));
+                        } else if let Some(frb) = vrb.into_float_ns() {
+                            self.set_stack_from_value(ra, TValue::Float(-frb));
+                        } else {
+                            // metamethod
+                            todo!()
+                        }
+                    }
+                    OpCode::BinaryNot => {
+                        let ra = get_ra(base, i);
+                        let vrb = &self.stack[get_rb(base, i)];
+                        if let Some(irb) = vrb.into_integer_ns() {
+                            self.set_stack_from_value(ra, TValue::Integer(!irb));
+                        } else {
+                            // metamethod
+                            todo!()
+                        }
                     }
                     OpCode::Not => {
-                        let b = get_rb(base, i);
-                        let res = self.stack[b as usize].is_false(); // next assignment may change this value
-                        self.set_stack_from_value(ra as usize, TValue::Boolean(res));
+                        let ra = get_ra(base, i);
+                        let vrb = &self.stack[get_rb(base, i)];
+                        self.set_stack_from_value(ra, TValue::Boolean(vrb.is_false()));
                     }
                     OpCode::Len => {
+                        let ra = get_ra(base, i);
                         let rb = get_rb(base, i);
-                        match &self.stack[rb] {
-                            TValue::Table(tref) => {
-                                let len = tref.borrow().len() as LuaInteger;
-                                self.set_stack_from_value(ra as usize, TValue::Integer(len));
-                            }
-                            TValue::String(s) => {
-                                self.set_stack_from_value(
-                                    ra as usize,
-                                    TValue::Integer(s.len() as LuaInteger),
-                                );
-                            }
-                            _ => {
-                                // try metamethod
-                                if !call_bin_tm(self, rb, 0, ra, OpCode::Len)? {
-                                    return luaG::type_error(self, rb, "get length of");
-                                }
-                            }
+                        if let Some(l) = self.stack[rb].try_len() {
+                            self.set_stack_from_value(ra, TValue::Integer(l as LuaInteger));
+                        } else {
+                            // TODO metamethod
+                            todo!()
                         }
-                        base = self.base_ci[self.ci].base as u32;
                     }
                     OpCode::Concat => {
-                        let b = get_arg_b(i);
-                        let c = get_arg_c(i);
-                        self.stack
-                            .resize(base as usize + c as usize + 1, TValue::Nil); // mark the end of concat operands
-                        concat(self, (c + 1 - b) as usize)?;
-                        let ra = base + get_arg_a(i);
-                        let rb = base + b;
-                        self.set_stack_from_idx(ra as StkId, rb as StkId);
-                        self.stack.resize(self.base_ci[self.ci].top, TValue::Nil);
-                        // restore top
+                        let ra = get_ra(base, i);
+                        let n = get_arg_b(i) as usize; // number of elements to concatenate
+                        self.stack.resize(ra + n, TValue::Nil); // mark the end of concat operands
+                        self.base_ci[self.ci].saved_pc = pc;
+                        concat(self, n)?;
+                    }
+                    OpCode::Close => {
+                        let ra = get_ra(base, i);
+                        self.save_state(pc);
+                        f_close(self, ra, 0, true)?;
+                    }
+                    OpCode::ToBeClosed => {
+                        todo!()
                     }
                     OpCode::Jmp => {
-                        self.do_jump(i, 0);
+                        pc = (pc as i32 + get_arg_sj(i)) as usize;
                     }
                     OpCode::Eq => {
-                        let rkb = self.get_rkb(i, base, protoid);
-                        let rkc = self.get_rkc(i, base, protoid);
-                        let a = get_arg_a(i) > 0;
-                        if equal_obj(self, rkb, rkc) != a {
-                            self.base_ci[self.ci].saved_pc += 1;
+                        let ra = get_ra(base, i);
+                        self.save_state(pc);
+                        let vrb = &self.stack[get_rb(base, i)];
+                        let cond = self.stack[ra] == *vrb;
+                        if cond != (get_arg_k(i) == 1) {
+                            pc += 1;
                         } else {
-                            self.do_next_jump(protoid);
+                            self.do_next_jump(protoid, &mut pc);
                         }
-                        base = self.base_ci[self.ci].base as u32;
                     }
                     OpCode::Lt => {
-                        let rkb = self.get_rkb(i, base, protoid);
-                        let rkc = self.get_rkc(i, base, protoid);
-                        let a = get_arg_a(i) > 0;
-                        if less_than(self, rkb, rkc)? != a {
-                            self.base_ci[self.ci].saved_pc += 1;
-                        } else {
-                            self.do_next_jump(protoid);
+                        let ra = get_ra(base, i);
+                        let rb = get_rb(base, i);
+                        let ok = {
+                            let vra = &self.stack[ra];
+                            let vrb = &self.stack[rb];
+                            op_order!(self,vra,vrb,<,i,protoid,&mut pc)
+                        };
+                        if !ok {
+                            order_error(self, ra, rb)?;
                         }
-                        base = self.base_ci[self.ci].base as u32;
                     }
                     OpCode::Le => {
-                        let rkb = self.get_rkb(i, base, protoid);
-                        let rkc = self.get_rkc(i, base, protoid);
-                        let a = get_arg_a(i) > 0;
-                        if less_equal(self, rkb, rkc)? != a {
-                            self.base_ci[self.ci].saved_pc += 1;
-                        } else {
-                            self.do_next_jump(protoid);
+                        let ra = get_ra(base, i);
+                        let rb = get_rb(base, i);
+                        let ok = {
+                            let vra = &self.stack[ra];
+                            let vrb = &self.stack[rb];
+                            op_order!(self,vra,vrb,<=,i,protoid,&mut pc)
+                        };
+                        if !ok {
+                            order_error(self, ra, rb)?;
                         }
-                        base = self.base_ci[self.ci].base as u32;
+                    }
+                    OpCode::EqK => {
+                        let vra = &self.stack[get_ra(base, i)];
+                        let vrb = &self.stack[get_rb(base, i)];
+                        let cond = vra == vrb;
+                        if cond != (get_arg_k(i) == 1) {
+                            pc += 1;
+                        } else {
+                            self.do_next_jump(protoid, &mut pc);
+                        }
+                    }
+                    OpCode::EqI => {
+                        let vra = &self.stack[get_ra(base, i)];
+                        let im = get_arg_sb(i) as LuaInteger;
+                        let cond = match vra {
+                            TValue::Integer(ia) => *ia == im,
+                            TValue::Float(fa) => *fa == im as LuaFloat,
+                            _ => false,
+                        };
+                        if cond != (get_arg_k(i) == 1) {
+                            pc += 1;
+                        } else {
+                            self.do_next_jump(protoid, &mut pc);
+                        }
+                    }
+                    OpCode::LtI => {
+                        let vra = &self.stack[get_ra(base, i)];
+                        let im = get_arg_sb(i) as LuaInteger;
+                        op_order_i!(self,vra,im,<,i,protoid, &mut pc);
+                    }
+                    OpCode::LeI => {
+                        let vra = &self.stack[get_ra(base, i)];
+                        let im = get_arg_sb(i) as LuaInteger;
+                        op_order_i!(self,vra,im,<=,i,protoid, &mut pc);
+                    }
+                    OpCode::GtI => {
+                        let vra = &self.stack[get_ra(base, i)];
+                        let im = get_arg_sb(i) as LuaInteger;
+                        op_order_i!(self,vra,im,>,i,protoid, &mut pc);
+                    }
+                    OpCode::GeI => {
+                        let vra = &self.stack[get_ra(base, i)];
+                        let im = get_arg_sb(i) as LuaInteger;
+                        op_order_i!(self,vra,im,>=,i,protoid, &mut pc);
                     }
                     OpCode::Test => {
-                        let is_false = get_arg_c(i) != 0;
-                        if self.stack[ra as usize].is_false() == is_false {
-                            self.base_ci[self.ci].saved_pc += 1;
+                        let vra = &self.stack[get_ra(base, i)];
+                        let cond = !vra.is_false();
+                        if cond != (get_arg_k(i) == 1) {
+                            pc += 1;
                         } else {
-                            self.do_next_jump(protoid);
+                            self.do_next_jump(protoid, &mut pc);
                         }
                     }
                     OpCode::TestSet => {
-                        let rb = get_rb(base, i);
-                        let c = get_arg_c(i) > 0;
-                        if self.stack[rb].is_false() == c {
-                            self.base_ci[self.ci].saved_pc += 1;
+                        let vrb = &self.stack[get_rb(base, i)];
+                        if vrb.is_false() == (get_arg_k(i) == 1) {
+                            pc += 1;
                         } else {
-                            self.stack[ra as usize] = self.stack[rb].clone();
-                            self.do_next_jump(protoid);
+                            self.stack[get_ra(base, i)] = vrb.clone();
+                            self.do_next_jump(protoid, &mut pc);
                         }
                     }
                     OpCode::Call => {
-                        let b = get_arg_b(i);
+                        let ra = get_ra(base, i);
+                        let b = get_arg_b(i) as usize;
                         let nresults = get_arg_c(i) as i32 - 1;
                         if b != 0 {
-                            self.stack.resize((ra + b) as usize, TValue::Nil); // top = ra+b
+                            // fixed number of arguments?
+                            self.stack.resize(ra + b, TValue::Nil);
+                            // top = ra+b
                         } // else previous instruction set top
-                        match self.dprecall(ra as usize, nresults) {
+                        self.base_ci[self.ci].saved_pc = pc;
+                        match self.dprecall(ra, nresults) {
                             Ok(PrecallStatus::Lua) => {
                                 // restart luaV_execute over new Lua function
                                 continue 'new_frame;
                             }
                             Ok(PrecallStatus::Rust) => {
                                 // it was a Rust function (`precall' called it); adjust results
-                                if nresults > 0 && self.stack.len() > self.base_ci[self.ci].top {
-                                    self.stack.resize(self.base_ci[self.ci].top, TValue::Nil);
-                                }
-                                base = self.base_ci[self.ci].base as u32;
                             }
                             Err(e) => {
                                 return Err(e);
@@ -329,43 +733,45 @@ impl LuaState {
                         }
                     }
                     OpCode::TailCall => {
-                        let b = get_arg_b(i);
+                        let ra = get_ra(base, i);
+                        let mut b = get_arg_b(i) as usize; // number of arguments + 1 (function)
+                        let nparams1 = get_arg_c(i) as usize;
+                        // delta is virtual 'func' - real 'func' (vararg functions)
+                        let delta = if nparams1 != 0 {
+                            self.base_ci[self.ci].n_extra_args + nparams1
+                        } else {
+                            0
+                        };
                         if b != 0 {
-                            self.stack.resize((ra + b) as usize, TValue::Nil); // top = ra+b
-                        } // else previous instruction set top
-                        match self.dprecall(ra as usize, LUA_MULTRET) {
+                            self.stack.resize(ra + b, TValue::Nil);
+                        // top = ra+b
+                        } else {
+                            // else previous instruction set top
+                            b = self.stack.len() - ra;
+                        }
+                        self.base_ci[self.ci].saved_pc = pc;
+                        if get_arg_k(i) != 0 {
+                            close_upval(self, base as usize);
+                            debug_assert!(*self.tbc_list.last().unwrap() < base as usize);
+                            debug_assert!(base == self.base_ci[self.ci].func as u32 + 1);
+                        }
+                        let mut nresults = 0;
+                        match self.dpre_tailcall(ra, b, delta, &mut nresults) {
                             Ok(PrecallStatus::Lua) => {
-                                // tail call: put new frame in place of previous one
-                                let nbase = self.base_ci[self.ci].base; // called base
-                                let nfunc = func; // called function
-                                let obase = self.base_ci[self.ci - 1].base; // caller base
-                                if !self.open_upval.is_empty() {
-                                    // close all upvalues from previous call
-                                    self.close_func(obase);
-                                }
-                                let nsaved_pc = self.base_ci[self.ci].saved_pc;
-                                // caller function
-                                let mut oci = &mut self.base_ci[self.ci - 1];
-                                let ofunc = oci.func;
-                                oci.base = ofunc + nbase - nfunc;
-                                let mut aux = 0;
-                                while nfunc + aux < self.stack.len() {
-                                    // move new frame into old one
-                                    self.stack[(ofunc + aux) as usize] =
-                                        self.stack[(nfunc + aux) as usize].clone();
-                                    aux += 1;
-                                }
-                                self.stack.resize((ofunc + aux) as usize, TValue::Nil);
-                                oci.top = self.stack.len(); // correct top
-                                oci.saved_pc = nsaved_pc;
-                                oci.call_status |= CIST_TAIL; // function was tail called
-                                self.base_ci.pop(); // remove new frame
-                                self.ci -= 1;
+                                // execute the callee
                                 continue 'new_frame;
                             }
                             Ok(PrecallStatus::Rust) => {
                                 // it was a Rust function (`precall' called it); adjust results
-                                base = self.base_ci[self.ci].base as u32;
+                                self.base_ci[self.ci].func -= delta; // restore func (if vararg)
+                                self.poscall(nresults)?; // finish caller
+                                if self.base_ci[self.ci].call_status & CIST_FRESH != 0 {
+                                    // end this frame
+                                    return Ok(());
+                                } else {
+                                    // continue running caller in this frame
+                                    continue 'new_frame;
+                                }
                             }
                             Err(e) => {
                                 return Err(e);
@@ -373,186 +779,161 @@ impl LuaState {
                         }
                     }
                     OpCode::Return => {
-                        let b = get_arg_b(i);
-                        if !self.protos[protoid].p.is_empty() {
-                            self.close_func(base as StkId);
+                        let ra = get_ra(base, i);
+                        let mut n = get_arg_b(i) as i32 - 1; // number of results
+                        let nparams1 = get_arg_c(i);
+                        if n < 0 {
+                            // not fixed ?
+                            n = (self.stack.len() - ra) as i32; // get what is available
                         }
-                        let was_fresh = self.base_ci[self.ci].call_status & CIST_FRESH != 0;
-                        let b = self.poscall(
-                            ra as usize,
-                            if b != 0 {
-                                b as usize - 1
-                            } else {
-                                self.stack.len() - ra as usize
-                            },
-                        );
-                        if was_fresh {
-                            // 'ci' is still the called one
-                            return Ok(()); // external invocation : return
-                        }
-                        if b {
-                            // invocation via reentry: continue execution
+                        self.base_ci[self.ci].saved_pc = pc;
+                        if get_arg_k(i) != 0 {
+                            // may there be open values ?
+                            self.base_ci[self.ci].nresults = n; // save number of results
                             self.stack.resize(self.base_ci[self.ci].top, TValue::Nil);
+                            f_close(self, base as usize, CLOSEKTOP, true)?;
+                            // TODO trap
                         }
-                        debug_assert!(self.base_ci[self.ci].call_status & CIST_LUA != 0);
-                        debug_assert!({
-                            let protoid = self.get_lua_closure_protoid(self.base_ci[self.ci].func);
-                            get_opcode(
-                                self.get_instruction(protoid, self.base_ci[self.ci].saved_pc - 1),
-                            ) == OpCode::Call
-                        });
-                        continue 'new_frame; // restart luaV_execute over new Lua function
+                        if nparams1 != 0 {
+                            // vararg function ?
+                            self.base_ci[self.ci].func -=
+                                self.base_ci[self.ci].n_extra_args + nparams1 as usize;
+                        }
+                        self.stack.resize(ra + n as usize, TValue::Nil);
+                        let call_status = self.base_ci[self.ci].call_status;
+                        self.poscall(n)?;
+                        if call_status & CIST_FRESH != 0 {
+                            // end this frame
+                            return Ok(());
+                        } else {
+                            // continue running caller in this frame
+                            continue 'new_frame;
+                        }
+                    }
+                    OpCode::Return0 => {
+                        // TODO hooks
+                        let nresults = self.base_ci[self.ci].nresults;
+                        let call_status = self.base_ci[self.ci].call_status;
+                        self.base_ci.pop();
+                        self.ci -= 1;
+                        self.stack.resize(base as usize - 1, TValue::Nil);
+                        for _ in 0..nresults {
+                            self.stack.push(TValue::Nil); // all results are nil
+                        }
+                        if call_status & CIST_FRESH != 0 {
+                            // end this frame
+                            return Ok(());
+                        } else {
+                            // continue running caller in this frame
+                            continue 'new_frame;
+                        }
+                    }
+                    OpCode::Return1 => {
+                        // TODO hooks
+                        let nres = self.base_ci[self.ci].nresults;
+                        let call_status = self.base_ci[self.ci].call_status;
+                        self.base_ci.pop();
+                        self.ci -= 1;
+                        if nres == 0 {
+                            self.stack.resize(base as usize - 1, TValue::Nil);
+                        } else {
+                            let ra = get_ra(base, i);
+                            self.set_stack_from_idx(base as usize - 1, ra); // at least this result
+                            self.stack.resize(base as usize, TValue::Nil);
+                            for _ in 0..nres - 1 {
+                                self.stack.push(TValue::Nil); // complete missing results
+                            }
+                        }
+                        if call_status & CIST_FRESH != 0 {
+                            // end this frame
+                            return Ok(());
+                        } else {
+                            // continue running caller in this frame
+                            continue 'new_frame;
+                        }
                     }
                     OpCode::ForLoop => {
-                        if self.stack[ra as usize].is_integer() {
-                            let step = self.stack[ra as usize + 2].get_integer_value();
-                            let idx = self.stack[ra as usize].get_integer_value() + step;
-                            let limit = self.stack[ra as usize + 1].get_integer_value();
-                            let end_loop = if step > 0 { idx <= limit } else { limit <= idx };
-                            if end_loop {
-                                // jump back
-                                let jump = get_arg_sbx(i);
-                                self.base_ci[self.ci].saved_pc =
-                                    (self.base_ci[self.ci].saved_pc as i32 + jump) as usize;
-                                self.set_stack_from_value(ra as usize, TValue::Integer(idx)); // update internal index
-                                let rai = ra as usize + 3;
-                                self.set_or_push(rai, TValue::Integer(idx)); // ...and external index
+                        let ra = get_ra(base, i);
+                        if self.stack[ra + 2].is_integer() {
+                            // integer loop?
+                            let count = self.stack[ra + 1].get_integer_value();
+                            if count > 0 {
+                                let step = self.stack[ra + 2].get_integer_value();
+                                let mut idx = self.stack[ra].get_integer_value(); // internal index
+                                self.set_stack_from_value(ra + 1, TValue::Integer(count - 1)); // update counter
+                                idx += step; // add step to index
+                                self.set_stack_from_value(ra, TValue::Integer(idx)); // update internal index
+                                self.set_stack_from_value(ra + 3, TValue::Integer(idx)); // and control variable
+                                pc = (pc as isize - get_arg_bx(i) as isize) as usize;
+                                //  jump back
                             }
-                        } else {
-                            let step = self.stack[ra as usize + 2].into_float().unwrap();
-                            let idx = self.stack[ra as usize].get_float_value() + step;
-                            let limit = self.stack[ra as usize + 1].into_float().unwrap();
-                            let end_loop = if step > 0.0 {
-                                idx <= limit
-                            } else {
-                                limit <= idx
-                            };
-                            if end_loop {
-                                // jump back
-                                let jump = get_arg_sbx(i);
-                                self.base_ci[self.ci].saved_pc =
-                                    (self.base_ci[self.ci].saved_pc as i32 + jump) as usize;
-                                self.set_stack_from_value(ra as usize, TValue::Float(idx)); // update internal index
-                                let rai = ra as usize + 3;
-                                self.set_or_push(rai, TValue::Float(idx)); // ...and external index
-                            }
-                        };
+                        } else if self.float_for_loop(ra) {
+                            pc = (pc as isize - get_arg_bx(i) as isize) as usize;
+                            //  jump back
+                        }
                     }
                     OpCode::ForPrep => {
-                        let ra = ra as usize;
-                        let ilimit = self.stack[ra + 1].into_integer();
-                        if self.stack[ra].is_integer()
-                            && self.stack[ra + 2].is_integer()
-                            && ilimit.is_ok()
-                        {
-                            let ilimit = ilimit.unwrap();
-                            let initv = self.stack[ra].get_integer_value();
-                            self.set_stack_from_value(ra + 1, TValue::from(ilimit));
-                            self.set_stack_from_value(
-                                ra,
-                                TValue::from(initv - self.stack[ra + 2].get_integer_value()),
-                            );
-                        } else {
-                            if Self::to_number(&mut self.stack, ra as usize, Some(ra as usize))
-                                .is_none()
-                            {
-                                return self.run_error("'for' initial value must be a number");
-                            }
-                            if Self::to_number(
-                                &mut self.stack,
-                                ra as usize + 1,
-                                Some(ra as usize + 1),
-                            )
-                            .is_none()
-                            {
-                                return self.run_error("'for' limit must be a number");
-                            }
-                            if Self::to_number(
-                                &mut self.stack,
-                                ra as usize + 2,
-                                Some(ra as usize + 2),
-                            )
-                            .is_none()
-                            {
-                                return self.run_error("'for' step must be a number");
-                            }
-                            // init = init - step
-                            self.stack[ra as usize] = TValue::Float(
-                                self.stack[ra as usize].get_float_value()
-                                    - self.stack[ra as usize + 2].get_float_value(),
-                            );
+                        let ra = get_ra(base, i);
+                        self.save_state(pc);
+                        if self.for_prep(ra)? {
+                            pc = (pc as isize + get_arg_bx(i) as isize + 1) as usize;
+                            // skip the loop
                         }
-                        let jump = get_arg_sbx(i);
-                        self.base_ci[self.ci].saved_pc =
-                            (self.base_ci[self.ci].saved_pc as i32 + jump) as usize;
+                    }
+                    OpCode::TForPrep => {
+                        let ra = get_ra(base, i);
+                        self.save_state(pc);
+                        // create to-be-closed upvalue (if needed)
+                        self.new_tbc_value(ra + 3);
+                        pc = (pc as isize + get_arg_bx(i) as isize) as usize;
+                        let i = self.get_instruction(protoid, pc);
+                        pc += 1;
+                        debug_assert!(get_opcode(i) == OpCode::TForCall && ra == get_ra(base, i));
+                        self.tforcall(&mut pc, protoid, base, i)?;
                     }
                     OpCode::TForCall => {
-                        let cb = ra as usize + 3; // call base
-                        self.set_stack_from_idx(cb, ra as StkId);
-                        self.set_stack_from_idx(cb + 1, ra as StkId + 1);
-                        self.set_stack_from_idx(cb + 2, ra as StkId + 2);
-                        let nresults = get_arg_c(i);
-                        self.dcall(cb, nresults as i32)?;
-                        self.stack.resize(self.base_ci[self.ci].top, TValue::Nil);
-                        let ci_pc = self.base_ci[self.ci].saved_pc;
-                        let i = self.get_instruction(protoid, ci_pc);
-                        self.base_ci[self.ci].saved_pc += 1;
-                        let ra = get_ra(base, i) as u32;
-                        debug_assert!(get_opcode(i) == OpCode::TForLoop);
-                        if !self.stack[ra as usize + 1].is_nil() {
-                            // continue loop ?
-                            self.set_stack_from_idx(ra as usize, ra as usize + 1); // save control variable
-                            let jump = get_arg_sbx(i);
-                            self.base_ci[self.ci].saved_pc =
-                                (self.base_ci[self.ci].saved_pc as i32 + jump) as usize;
-                            // jump back
-                        }
+                        self.tforcall(&mut pc, protoid, base, i)?;
                     }
                     OpCode::TForLoop => {
-                        if !self.stack[ra as usize].is_nil() {
-                            // continue loop ?
-                            self.stack[ra as usize] = self.stack[ra as usize + 1].clone();
-                            let jump = get_arg_sbx(i);
-                            self.base_ci[self.ci].saved_pc =
-                                (self.base_ci[self.ci].saved_pc as i32 + jump) as usize;
-                        }
+                        self.tforloop(&mut pc, base, i);
                     }
                     OpCode::SetList => {
+                        let ra = get_ra(base, i);
                         let mut n = get_arg_b(i);
-                        let mut c = get_arg_c(i);
+                        let mut last = get_arg_c(i);
                         if n == 0 {
-                            n = self.stack.len() as u32 - ra - 1;
+                            n = (self.stack.len() - ra - 1) as u32; // get up to the top
+                        } else {
+                            self.stack.resize(self.base_ci[self.ci].top, TValue::Nil);
                         }
-                        if c == 0 {
-                            let ci_pc = self.base_ci[self.ci].saved_pc;
-                            debug_assert!(
-                                get_opcode(self.get_instruction(protoid, ci_pc))
-                                    == OpCode::ExtraArg
-                            );
-                            c = get_arg_ax(self.get_instruction(protoid, ci_pc));
-                            self.base_ci[self.ci].saved_pc += 1;
+                        last += n;
+                        if get_arg_k(i) != 0 {
+                            let i2 = self.get_instruction(protoid, pc);
+                            last += get_arg_ax(i2) * (MAXARG_C as u32 + 1);
+                            pc += 1;
                         }
-                        let mut last = (c - 1) * LFIELDS_PER_FLUSH + n;
-                        if let TValue::Table(tref) = &self.stack[ra as usize] {
+                        if let TValue::Table(tref) = &self.stack[ra] {
                             let mut t = tref.borrow_mut();
                             while n > 0 {
                                 t.set(
                                     TValue::Integer(last as LuaInteger),
-                                    self.stack[(ra + n) as usize].clone(),
+                                    self.stack[ra + n as usize].clone(),
                                 );
                                 last -= 1;
                                 n -= 1;
                             }
                         }
-                        self.stack.resize(self.base_ci[self.ci].top, TValue::Nil);
                     }
                     OpCode::Closure => {
+                        let ra = get_ra(base, i);
                         let pid = get_arg_bx(i);
                         let new_protoid = self.protos[protoid].p[pid as usize];
+                        self.save_state(pc);
+
                         let nup = self.protos[new_protoid].upvalues.len();
                         let ncl =
                             Rc::new(RefCell::new(Closure::Lua(LClosure::new(new_protoid, nup))));
-                        self.set_stack_from_value(ra as usize, TValue::Function(ncl.clone()));
+                        self.set_stack_from_value(ra, TValue::Function(ncl.clone()));
                         let mut ncl = ncl.borrow_mut();
                         for i in 0..nup {
                             let upvaldesc = &self.protos[new_protoid].upvalues[i];
@@ -569,20 +950,40 @@ impl LuaState {
                     }
                     OpCode::VarArg => {
                         let ra = ra as usize;
-                        let mut b = get_arg_b(i) as i32 - 1;
-                        let cbase = self.base_ci[self.ci].base as i32;
-                        let n = (cbase - func as i32 - self.protos[protoid].numparams as i32 - 1)
-                            .max(0);
-                        if b < 0 {
-                            b = n;
-                            self.stack.resize(ra + n as usize, TValue::Nil);
+                        let mut wanted = get_arg_c(i) as i32 - 1; // required results
+                        self.save_state(pc);
+                        let nextra = self.base_ci[self.ci].n_extra_args as i32;
+                        if wanted < 0 {
+                            wanted = nextra; // get all extra arguments available
+                            self.stack.resize(ra + nextra as usize, TValue::Nil);
                         }
-                        for j in 0..b.min(n) as usize {
-                            self.set_stack_from_idx(ra + j, (cbase + j as i32 - n) as usize);
+                        let func = self.base_ci[self.ci].func as i32;
+                        for i in 0..wanted.min(nextra) as usize {
+                            self.set_stack_from_idx(ra + i, (func - nextra + i as i32) as usize);
                         }
-                        for j in b.min(n)..b {
-                            self.set_stack_from_value(ra + j as usize, TValue::Nil);
+                        for i in wanted.min(nextra)..wanted {
+                            self.set_stack_from_value(ra + i as usize, TValue::Nil);
                         }
+                    }
+                    OpCode::VarArgPrep => {
+                        self.save_state(pc);
+                        let nfixparams = get_arg_a(i) as usize;
+                        let func = self.base_ci[self.ci].func;
+                        let actual = self.stack.len() - func - 1; // number of arguments
+                        let nextra = actual - nfixparams; // number of extra arguments
+                        self.base_ci[self.ci].n_extra_args = nextra;
+                        let top = self.stack.len();
+                        let max_stack_size = top + self.protos[protoid].maxstacksize;
+                        self.stack.resize(max_stack_size + 1, TValue::Nil);
+                        // copy function to the top of the stack
+                        self.set_stack_from_idx(top, func);
+                        // move fixed parameters to the top of the stack
+                        for i in 1..=nfixparams {
+                            self.set_stack_from_idx(top + i, func + i);
+                        }
+                        self.base_ci[self.ci].func += actual + 1;
+                        self.base_ci[self.ci].top += actual + 1;
+                        debug_assert!(self.stack.len() <= self.base_ci[self.ci].top);
                     }
                     OpCode::ExtraArg => {
                         unreachable!()
@@ -591,60 +992,249 @@ impl LuaState {
             }
         }
     }
-    pub(crate) fn do_jump(&mut self, i: u32, e: i32) {
-        let a = get_arg_a(i) as usize;
-        if a > 0 {
-            self.close_func(self.base_ci[self.ci].base + a - 1);
+
+    /// Whenever code can raise errors, the global 'pc' and the global
+    /// 'top' must be correct to report occasional errors.
+    fn save_state(&mut self, pc: usize) {
+        self.base_ci[self.ci].saved_pc = pc;
+        self.stack.resize(self.base_ci[self.ci].top, TValue::Nil);
+    }
+    pub(crate) fn do_next_jump(&mut self, protoid: usize, pc: &mut usize) {
+        let inst = self.get_instruction(protoid, *pc);
+        self.do_jump(inst, pc, 1)
+    }
+    pub(crate) fn do_jump(&mut self, i: u32, pc: &mut usize, delta: usize) {
+        *pc = (*pc as isize + get_arg_sj(i) as isize + delta as isize) as usize;
+    }
+    /// Execute a step of a float numerical for loop, returning
+    /// true iff the loop must continue. (The integer case is
+    /// written online with opcode OP_FORLOOP, for performance.)
+    fn float_for_loop(&mut self, ra: usize) -> bool {
+        let step = self.stack[ra + 2].get_float_value();
+        let limit = self.stack[ra + 1].get_float_value();
+        let idx = self.stack[ra].get_float_value();
+        let idx = idx + step;
+        let continue_loop = if step > 0.0 {
+            idx <= limit
+        } else {
+            limit <= idx
+        };
+        if continue_loop {
+            self.set_stack_from_value(ra, TValue::Float(idx)); // update internal index
+            self.set_stack_from_value(ra + 3, TValue::Float(idx)); // and control variable
+            return true;
         }
-        self.base_ci[self.ci].saved_pc =
-            (self.base_ci[self.ci].saved_pc as i32 + get_arg_sbx(i) + e) as usize;
+        false
     }
-    pub(crate) fn do_next_jump(&mut self, protoid: usize) {
-        let ci_pc = self.base_ci[self.ci].saved_pc;
-        let inst = self.get_instruction(protoid, ci_pc);
-        self.do_jump(inst, 1)
+
+    /// Prepare a numerical for loop (opcode OP_FORPREP).
+    /// Return true to skip the loop. Otherwise,
+    /// after preparation, stack will be as follows:
+    ///   ra : internal index (safe copy of the control variable)
+    ///   ra + 1 : loop counter (integer loops) or limit (float loops)
+    ///   ra + 2 : step
+    ///   ra + 3 : control variable
+    pub(crate) fn for_prep(&mut self, ra: usize) -> Result<bool, LuaError> {
+        if self.stack[ra].is_integer() && self.stack[ra + 2].is_integer() {
+            let init = self.stack[ra].get_integer_value();
+            let step = self.stack[ra + 2].get_integer_value();
+            let mut limit = 0;
+            if step == 0 {
+                self.run_error("'for' step is zero")?;
+            }
+            self.set_stack_from_value(ra + 3, TValue::Integer(init)); // control variable
+            if self.for_limit(init, ra + 1, &mut limit, step)? {
+                return Ok(true); // skip the loop
+            } else {
+                let mut count;
+                // prepare loop counter
+                if step > 0 {
+                    // ascending loop
+                    count = limit - init;
+                    if step != 1 {
+                        // avoid division in the too common case
+                        count /= step;
+                    }
+                } else {
+                    // step < 0; descending loop
+                    count = init - limit;
+                    // step+1 avoids negating mininteger
+                    count /= (-(step + 1)) + 1;
+                }
+                // store the counter in place of the limit (which won't be
+                // needed anymore)
+                self.set_stack_from_value(ra + 1, TValue::Integer(count));
+            }
+        } else {
+            // try making all values floats
+            let limit = self.stack[ra + 1]
+                .into_float()
+                .ok_or(for_error(self, ra + 1, "limit"))?;
+            let step = self.stack[ra + 2]
+                .into_float()
+                .ok_or(for_error(self, ra + 2, "step"))?;
+            let init = self.stack[ra]
+                .into_float()
+                .ok_or(for_error(self, ra, "initial value"))?;
+            if step == 0.0 {
+                self.run_error("'for' step is zero")?;
+            }
+            let skip_loop = if step > 0.0 {
+                limit < init
+            } else {
+                init < limit
+            };
+            if skip_loop {
+                return Ok(true); // skip the loop
+            }
+            // make sure all internal values are floats
+            self.set_stack_from_value(ra + 1, TValue::Float(limit));
+            self.set_stack_from_value(ra + 2, TValue::Float(step));
+            self.set_stack_from_value(ra, TValue::Float(init)); // internal index
+            self.set_stack_from_value(ra + 3, TValue::Float(init)); // control variable
+        }
+        Ok(false)
+    }
+
+    /// Try to convert a 'for' limit to an integer, preserving the semantics
+    /// of the loop. Return true if the loop must not run; otherwise, 'limit'
+    /// gets the integer limit.
+    /// (The following explanation assumes a positive step; it is valid for
+    /// negative steps mutatis mutandis.)
+    /// If the limit is an integer or can be converted to an integer,
+    /// rounding down, that is the limit.
+    /// Otherwise, check whether the limit can be converted to a float. If
+    /// the float is too large, clip it to LUA_MAXINTEGER.  If the float
+    /// is too negative, the loop should not run, because any initial
+    /// integer value is greater than such limit; so, the function returns
+    /// true to signal that. (For this latter case, no integer limit would be
+    /// correct; even a limit of LUA_MININTEGER would run the loop once for
+    /// an initial value equal to LUA_MININTEGER.)
+    pub(crate) fn for_limit(
+        &mut self,
+        init: LuaInteger,
+        ra: usize,
+        limit: &mut LuaInteger,
+        step: LuaInteger,
+    ) -> Result<bool, LuaError> {
+        if let Some(val) = self.stack[ra].into_integer() {
+            *limit = val;
+        } else {
+            // not coercible to integer
+            if let Some(fval) = self.stack[ra].into_float() {
+                // 'fval' is a float out of integer bounds
+                if fval > 0.0 {
+                    // if it is positive, it is too large
+                    if step < 0 {
+                        //  initial value must be less than it
+                        return Ok(true);
+                    }
+                    *limit = LuaInteger::MAX; // truncate
+                } else {
+                    // it is less than min integer
+                    if step > 0 {
+                        // initial value must be greater than it
+                        return Ok(true);
+                    }
+                    *limit = LuaInteger::MIN; // truncate
+                }
+            } else {
+                return Err(for_error(self, ra, "limit"));
+            }
+        }
+        if step > 0 {
+            return Ok(init > *limit);
+        }
+        Ok(init < *limit)
+    }
+
+    /// Insert a variable in the list of to-be-closed variables.
+    pub(crate) fn new_tbc_value(&self, level: usize) {
+        debug_assert!(self.tbc_list.is_empty() || level > *self.tbc_list.last().unwrap());
+        if self.stack[level].is_false() {
+            return; // false doesn't need to be closed
+        }
+        // TODO close metamethods
+        todo!()
+    }
+
+    pub(crate) fn tforcall(
+        &mut self,
+        pc: &mut usize,
+        protoid: usize,
+        base: u32,
+        i: u32,
+    ) -> Result<(), LuaError> {
+        let ra = get_ra(base, i);
+        // 'ra' has the iterator function, 'ra + 1' has the state,
+        // 'ra + 2' has the control variable, and 'ra + 3' has the
+        // to-be-closed variable. The call will use the stack after
+        // these values (starting at 'ra + 4')
+
+        //  push function, state, and control variable
+        self.set_stack_from_idx(ra + 4, ra);
+        self.set_stack_from_idx(ra + 5, ra + 1);
+        self.set_stack_from_idx(ra + 6, ra + 2);
+        self.base_ci[self.ci].saved_pc = *pc;
+        self.dcall(ra + 4, get_arg_c(i) as i32)?; // do the call
+        let i = self.get_instruction(protoid, *pc);
+        *pc += 1;
+        debug_assert!(get_opcode(i) == OpCode::TForLoop && ra == get_ra(base, i));
+        self.tforloop(pc, base, i);
+        Ok(())
+    }
+
+    pub(crate) fn tforloop(&mut self, pc: &mut usize, base: u32, i: u32) {
+        let ra = get_ra(base, i);
+        if !self.stack[ra + 4].is_nil() {
+            // continue loop?
+            self.set_stack_from_idx(ra + 2, ra + 4); // save control variable
+            *pc = (*pc as isize - get_arg_bx(i) as isize) as usize; // jump back
+        }
     }
 }
 
-fn equal_obj(_state: &mut LuaState, rkb: TValue, rkc: TValue) -> bool {
-    rkb == rkc
-    // TODO metamethod
-}
-
-fn less_than(state: &mut LuaState, rkb: TValue, rkc: TValue) -> Result<bool, LuaError> {
-    if rkb.get_type_name() != rkc.get_type_name() {
-        luaG::order_error(state, &rkb, &rkc)?;
-    } else if rkb.is_number() {
-        return Ok(rkb.into_float().unwrap() < rkc.into_float().unwrap());
-    } else if rkb.is_string() {
-        return Ok(rkb.borrow_string_value() < rkc.borrow_string_value());
+/// Close all upvalues and to-be-closed variables up to the given stack
+/// level. Return restored 'level'.
+pub(crate) fn f_close(
+    state: &mut LuaState,
+    level: usize,
+    status: i32,
+    yy: bool,
+) -> Result<(), LuaError> {
+    close_upval(state, level); // first, close the upvalues
+    if state.tbc_list.is_empty() {
+        return Ok(());
     }
-    // TODO metamethods
-    luaG::order_error(state, &rkb, &rkc)?;
-    unreachable!()
-}
-
-fn less_equal(state: &mut LuaState, rkb: TValue, rkc: TValue) -> Result<bool, LuaError> {
-    if rkb.get_type_name() != rkc.get_type_name() {
-        luaG::order_error(state, &rkb, &rkc)?;
-    } else if rkb.is_number() {
-        return Ok(rkb.into_float().unwrap() <= rkc.into_float().unwrap());
-    } else if rkb.is_string() {
-        return Ok(rkb.borrow_string_value() <= rkc.borrow_string_value());
+    while *state.tbc_list.last().unwrap() >= level {
+        // traverse tbc's down to that level
+        let tbc = state.tbc_list.pop().unwrap(); // remove variable from the list
+        prep_call_close_method(state, tbc, status, yy)?; // close variable
     }
-    // TODO metamethods
-    luaG::order_error(state, &rkb, &rkc)?;
-    unreachable!()
+    Ok(())
 }
 
-fn call_bin_tm(
+/// Prepare and call a closing method.
+/// If status is CLOSEKTOP, the call to the closing method will be pushed
+/// at the top of the stack. Otherwise, values can be pushed right after
+/// the 'level' of the upvalue being closed, as everything after that
+/// won't be used again.
+fn prep_call_close_method(
     _state: &mut LuaState,
-    _rb: usize,
-    _rc: usize,
-    _ra: u32,
-    _op: OpCode,
-) -> Result<bool, LuaError> {
+    _level: usize,
+    _status: i32,
+    _yy: bool,
+) -> Result<(), LuaError> {
+    // TODO
     todo!()
+}
+
+/// Close all upvalues up to the given stack level.
+fn close_upval(state: &mut LuaState, level: usize) {
+    while !state.open_upval.is_empty() && state.open_upval.last().unwrap().v >= level {
+        let uv = state.open_upval.pop().unwrap();
+        state.stack[uv.v] = uv.value.clone();
+    }
 }
 
 #[cfg(feature = "debug_logs")]
@@ -655,13 +1245,13 @@ fn dump_function_header(state: &mut LuaState, func: usize) {
     let nup = cl.upvalues.len();
     let proto = &state.protos[cl.proto];
     let nk = proto.k.len();
-    if proto.linedefined == proto.lastlinedefined {
-        _ = writeln!(state.stdout, "; function [{}] ", proto.linedefined);
+    if proto.line_defined == proto.lastlinedefined {
+        _ = writeln!(state.stdout, "; function [{}] ", proto.line_defined);
     } else {
         _ = writeln!(
             state.stdout,
             "; function [{}-{}] ",
-            proto.linedefined, proto.lastlinedefined
+            proto.line_defined, proto.lastlinedefined
         );
     }
     _ = writeln!(
@@ -701,30 +1291,37 @@ fn dump_function_header(state: &mut LuaState, func: usize) {
 
 #[cfg(feature = "debug_logs")]
 fn disassemble(state: &LuaState, i: Instruction, func: usize) -> String {
-    use crate::opcodes::{get_arg_sb, get_arg_sc};
-
     let o = get_opcode(i);
     let a = get_arg_a(i);
-    let b = get_arg_sb(i);
-    let c = get_arg_sc(i);
+    let b = get_arg_b(i) as i8;
+    let c = get_arg_c(i) as i8;
+    let sc = get_arg_sc(i);
     let ax = get_arg_ax(i);
     let sbx = get_arg_sbx(i);
     let bx = get_arg_bx(i);
+    let k = get_arg_k(i);
     let cl = state.get_closure_ref(func);
     let cl = cl.borrow();
     let cl = cl.borrow_lua_closure();
     let proto = &state.protos[cl.proto];
     let mut res = if o.is_asbx() {
         format!("{:10} {:>5} {:>5}", OPCODE_NAME[o as usize], a, sbx)
+    } else if o.is_a() {
+        format!("{:10} {:>5}", OPCODE_NAME[o as usize], a)
     } else if o.is_ax() {
         format!("{:10} {:>5}", OPCODE_NAME[o as usize], ax)
     } else if o.is_abx() {
         format!("{:10} {:>5} {:>5}", OPCODE_NAME[o as usize], a, bx)
+    } else if o.is_ak() {
+        format!("{:10} {:>5} {:>5}", OPCODE_NAME[o as usize], a, k)
     } else if o.is_ab() {
         format!("{:10} {:>5} {:>5}", OPCODE_NAME[o as usize], a, b)
     } else if o.is_ac() {
         format!("{:10} {:>5} {:>5}", OPCODE_NAME[o as usize], a, c)
+    } else if o.is_absc() {
+        format!("{:10} {:>5} {:>5} {:>5}", OPCODE_NAME[o as usize], a, b, sc)
     } else {
+        // abc
         format!("{:10} {:>5} {:>5} {:>5}", OPCODE_NAME[o as usize], a, b, c)
     };
     match o {
@@ -742,18 +1339,17 @@ fn disassemble(state: &LuaState, i: Instruction, func: usize) -> String {
 
 pub(crate) fn concat(state: &mut LuaState, total: usize) -> Result<(), LuaError> {
     let top = state.stack.len();
-    if !(api::is_string(state, top as isize - 2) || api::is_number(state, top as isize - 2))
-        || api::to_string(state, top as isize - 1).is_none()
-    {
+    if !(state.stack[top - 2].is_string() || state.stack[top - 2].is_number()) {
         // TODO metamethods
-        return luaG::concat_error(state, top as isize - 2, top as isize - 1);
+        luaG::concat_error(state, top as isize - 2, top as isize - 1)
     } else {
         let mut res = String::new();
         let first = top - total;
         for i in first..top {
-            res.push_str(&state.stack[i as usize].to_string());
+            res.push_str(&state.stack[i].to_string());
         }
         state.stack[first] = TValue::from(res);
+        state.stack.resize(first + 1, TValue::Nil);
         Ok(())
     }
 }
@@ -766,4 +1362,9 @@ fn get_ra(base: u32, i: u32) -> usize {
 #[inline]
 fn get_rb(base: u32, i: u32) -> usize {
     (base + get_arg_b(i)) as usize
+}
+
+#[inline]
+fn get_rc(base: u32, i: u32) -> usize {
+    (base + get_arg_c(i)) as usize
 }

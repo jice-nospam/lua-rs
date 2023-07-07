@@ -1,6 +1,6 @@
 //! Standard library for string operations and pattern-matching
 
-use crate::{api, luaL, state::LuaState};
+use crate::{api, luaL, state::LuaState, LuaError};
 
 use super::LibReg;
 
@@ -67,14 +67,14 @@ const STR_FUNCS: [LibReg; 15] = [
     },
 ];
 
-pub fn lib_open_string(state: &mut LuaState) -> Result<i32, ()> {
+pub fn lib_open_string(state: &mut LuaState) -> Result<i32, LuaError> {
     luaL::new_lib(state, &STR_FUNCS);
     create_metatable(state);
     Ok(1)
 }
 
 fn create_metatable(state: &mut LuaState) {
-    api::create_table(state); // create metatable for strings
+    api::new_table(state); // create metatable for strings
     api::push_literal(state, ""); // dummy string
     api::push_value(state, -2);
     api::set_metatable(state, -2); // set string metatable
@@ -84,34 +84,34 @@ fn create_metatable(state: &mut LuaState) {
     api::pop(state, 1); // pop metatable
 }
 
-pub fn str_byte(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn str_byte(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
 
 /// Receives zero or more integers.
 /// Returns a string with length equal to the number of arguments, in which each character has the internal numerical code equal to its corresponding argument.
 /// Note that numerical codes are not necessarily portable across platforms
-pub fn str_char(state: &mut LuaState) -> Result<i32, ()> {
+pub fn str_char(state: &mut LuaState) -> Result<i32, LuaError> {
     let n = api::get_top(state) as isize; // number of arguments
     let mut s = String::new();
     for i in 1..=n {
-        let c = luaL::check_integer(state, i).map_err(|_| ())?;
+        let c = luaL::check_integer(state, i)?;
         match char::from_u32(c as u32) {
             Some(c) => s.push(c),
-            None => luaL::arg_error(state, i, "invalid value").map_err(|_| ())?,
+            None => luaL::arg_error(state, i, "invalid value")?,
         }
     }
     state.push_string(&s);
     Ok(1)
 }
-pub fn str_dump(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn str_dump(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn str_find(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn str_find(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn str_format(s: &mut LuaState) -> Result<i32, ()> {
-    let value = luaL::check_string(s, 1).map_err(|_| ())?;
+pub fn str_format(s: &mut LuaState) -> Result<i32, LuaError> {
+    let value = luaL::check_string(s, 1)?;
     let mut ch = value.chars();
     let mut res = String::new();
     let mut arg = 1;
@@ -129,43 +129,20 @@ pub fn str_format(s: &mut LuaState) -> Result<i32, ()> {
                     arg += 1;
                     match c {
                         // TODO support complete printf format
-                        'c' => {
-                            match char::from_u32(luaL::check_integer(s, arg).map_err(|_| ())? as u32)
-                            {
-                                Some(char_val) => res.push_str(&format!("{}", char_val)),
-                                None => res.push('�'),
-                            }
-                        }
-                        'd' | 'i' => res
-                            .push_str(&format!("{}", luaL::check_integer(s, arg).map_err(|_| ())?)),
-                        'o' => res.push_str(&format!(
-                            "{:o}",
-                            luaL::check_integer(s, arg).map_err(|_| ())?
-                        )),
-                        'u' => res.push_str(&format!(
-                            "{}",
-                            luaL::check_integer(s, arg).map_err(|_| ())? as u64
-                        )),
-                        'x' => res.push_str(&format!(
-                            "{:x}",
-                            luaL::check_integer(s, arg).map_err(|_| ())?
-                        )),
-                        'X' => res.push_str(&format!(
-                            "{:X}",
-                            luaL::check_integer(s, arg).map_err(|_| ())?
-                        )),
-                        'e' => res.push_str(&format!(
-                            "{:e}",
-                            luaL::check_number(s, arg).map_err(|_| ())?
-                        )),
-                        'E' => res.push_str(&format!(
-                            "{:E}",
-                            luaL::check_number(s, arg).map_err(|_| ())?
-                        )),
-                        'f' => res
-                            .push_str(&format!("{}", luaL::check_number(s, arg).map_err(|_| ())?)),
+                        'c' => match char::from_u32(luaL::check_integer(s, arg)? as u32) {
+                            Some(char_val) => res.push_str(&format!("{}", char_val)),
+                            None => res.push('�'),
+                        },
+                        'd' | 'i' => res.push_str(&format!("{}", luaL::check_integer(s, arg)?)),
+                        'o' => res.push_str(&format!("{:o}", luaL::check_integer(s, arg)?)),
+                        'u' => res.push_str(&format!("{}", luaL::check_integer(s, arg)? as u64)),
+                        'x' => res.push_str(&format!("{:x}", luaL::check_integer(s, arg)?)),
+                        'X' => res.push_str(&format!("{:X}", luaL::check_integer(s, arg)?)),
+                        'e' => res.push_str(&format!("{:e}", luaL::check_number(s, arg)?)),
+                        'E' => res.push_str(&format!("{:E}", luaL::check_number(s, arg)?)),
+                        'f' => res.push_str(&format!("{}", luaL::check_number(s, arg)?)),
                         'g' => {
-                            let n = luaL::check_number(s, arg).map_err(|_| ())?;
+                            let n = luaL::check_number(s, arg)?;
                             if n.abs() <= 1E-5 || n.abs() >= 1E6 {
                                 res.push_str(&format!("{:e}", n));
                             } else {
@@ -173,7 +150,7 @@ pub fn str_format(s: &mut LuaState) -> Result<i32, ()> {
                             }
                         }
                         'G' => {
-                            let n = luaL::check_number(s, arg).map_err(|_| ())?;
+                            let n = luaL::check_number(s, arg)?;
                             if n.abs() <= 1E-5 || n.abs() >= 1E6 {
                                 res.push_str(&format!("{:E}", n));
                             } else {
@@ -181,18 +158,17 @@ pub fn str_format(s: &mut LuaState) -> Result<i32, ()> {
                             }
                         }
                         's' => {
-                            let s = luaL::check_string(s, arg).map_err(|_| ())?;
+                            let s = luaL::check_string(s, arg)?;
                             res.push_str(&s);
                         }
                         _ => {
-                            luaL::error(s, &format!("invalid option '%{}' to 'format'", c))
-                                .map_err(|_| ())?;
+                            luaL::error(s, &format!("invalid option '%{}' to 'format'", c))?;
                             unreachable!()
                         }
                     }
                 }
                 None => {
-                    luaL::error(s, "invalid conversion '%' to 'format'").map_err(|_| ())?;
+                    luaL::error(s, "invalid conversion '%' to 'format'")?;
                     unreachable!()
                 }
             }
@@ -201,34 +177,34 @@ pub fn str_format(s: &mut LuaState) -> Result<i32, ()> {
     s.push_string(&res);
     Ok(1)
 }
-pub fn str_gfind(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn str_gfind(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn str_gmatch(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn str_gmatch(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn str_gsub(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn str_gsub(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn str_len(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn str_len(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn str_lower(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn str_lower(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn str_match(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn str_match(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn str_rep(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn str_rep(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn str_reverse(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn str_reverse(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn str_sub(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn str_sub(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn str_upper(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn str_upper(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
 

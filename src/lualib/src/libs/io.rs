@@ -2,7 +2,7 @@
 
 use std::io::{stdout, Write};
 
-use crate::{api, luaL, state::LuaState};
+use crate::{api, luaL, state::LuaState, LuaError};
 
 use super::LibReg;
 
@@ -100,34 +100,34 @@ fn create_metatable(state: &mut LuaState) {
     api::pop(state, 1); // pop new metatable
 }
 
-pub fn io_close(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn io_close(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn io_flush(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn io_flush(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn io_input(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn io_input(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn io_lines(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn io_lines(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn io_open(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn io_open(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn io_output(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn io_output(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn io_popen(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn io_popen(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn io_read(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn io_read(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn io_tmpfile(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn io_tmpfile(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn io_type(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn io_type(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
 
@@ -145,35 +145,35 @@ fn g_write(state: &mut LuaState, out: &mut dyn Write, arg: isize) -> i32 {
     1
 }
 
-pub fn io_write(state: &mut LuaState) -> Result<i32, ()> {
+pub fn io_write(state: &mut LuaState) -> Result<i32, LuaError> {
     Ok(g_write(state, &mut stdout(), 1))
 }
-pub fn f_flush(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn f_flush(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn f_lines(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn f_lines(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn f_read(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn f_read(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn f_seek(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn f_seek(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn f_setvbuf(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn f_setvbuf(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn f_write(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn f_write(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn io_gc(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn io_gc(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn io_tostring(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn io_tostring(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
 
-pub fn lib_open_io(state: &mut LuaState) -> Result<i32, ()> {
+pub fn lib_open_io(state: &mut LuaState) -> Result<i32, LuaError> {
     luaL::new_lib(state, &IO_FUNCS);
     create_metatable(state);
     Ok(1)

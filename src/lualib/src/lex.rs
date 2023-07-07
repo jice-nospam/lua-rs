@@ -4,10 +4,10 @@ use crate::{
     api::LuaError,
     limits::Instruction,
     object::{chunk_id, LocVar, Proto},
-    parser::FuncState,
+    parser::{ExpressionDesc, ExpressionKind, FuncState},
     state::LuaState,
     zio::Zio,
-    LuaFloat, LuaInteger,
+    LuaFloat, LuaInteger, TValue,
 };
 
 const FIRST_RESERVED: isize = 257;
@@ -219,23 +219,51 @@ pub struct LabelDesc {
     pub line: usize,
     /// local level where it appears in current block
     pub nactvar: usize,
+    /// goto that escapes upvalues
+    pub close: bool,
 }
 impl LabelDesc {
-    pub(crate) fn new(name: &str, line: usize, pc: usize, nactvar: usize) -> Self {
+    pub(crate) fn new(name: String, line: usize, pc: usize, nactvar: usize) -> Self {
         Self {
-            name: name.to_owned(),
+            name,
             pc,
             line,
             nactvar,
+            close: false,
         }
     }
+}
+
+#[derive(PartialEq, Default, Clone, Copy)]
+/// kind of variables
+pub enum VarKind {
+    #[default]
+    Regular,
+    Const,
+    ToBeClosed,
+    CompileTimeConst,
+}
+
+/// description of an active local variable
+pub struct VarDesc {
+    /// constant value (if it is a compile-time constant)
+    pub value: TValue,
+    pub kind: VarKind,
+    /// register holding the variable
+    pub ridx: usize,
+    /// index of the variable in the Proto's 'locvars' array
+    pub pidx: usize,
+    /// variable name
+    pub name: String,
+    // constant value (if any)
+    pub k: TValue,
 }
 
 #[derive(Default)]
 /// dynamic structures used by the parser
 pub struct DynData {
     /// list of active local variables
-    pub actvar: Vec<usize>,
+    pub actvar: Vec<VarDesc>,
     /// list of pending gotos
     pub gt: Vec<LabelDesc>,
     /// list of active labels
@@ -280,7 +308,7 @@ impl<T> LexState<T> {
             dyd: DynData::default(),
             source: source.to_owned(),
             envn: "_ENV".to_owned(),
-            vfs: vec![FuncState::new()],
+            vfs: vec![FuncState::new(1)],
         }
     }
     pub fn borrow_mut_fs(&mut self, idx: Option<usize>) -> &mut FuncState {
@@ -289,13 +317,14 @@ impl<T> LexState<T> {
             None => self.vfs.last_mut().unwrap(),
         }
     }
+
     pub fn borrow_fs(&self, idx: Option<usize>) -> &FuncState {
         match idx {
             Some(idx) => &self.vfs[idx],
             None => self.vfs.last().unwrap(),
         }
     }
-    pub fn next_pc(&self, state: &mut LuaState) -> usize {
+    pub fn next_pc(&self, state: &LuaState) -> usize {
         self.borrow_proto(state, None).next_pc() as usize
     }
     pub(crate) fn borrow_mut_proto<'a>(
@@ -306,11 +335,7 @@ impl<T> LexState<T> {
         let id = self.borrow_fs(fsid).f;
         &mut state.protos[id]
     }
-    pub(crate) fn borrow_proto<'a>(
-        &self,
-        state: &'a mut LuaState,
-        fsid: Option<usize>,
-    ) -> &'a Proto {
+    pub(crate) fn borrow_proto<'a>(&self, state: &'a LuaState, fsid: Option<usize>) -> &'a Proto {
         let id = self.borrow_fs(fsid).f;
         &state.protos[id]
     }
@@ -322,48 +347,74 @@ impl<T> LexState<T> {
         let protoid = self.borrow_fs(None).f;
         state.borrow_mut_instruction(protoid, pc)
     }
-    pub fn get_code(&self, state: &LuaState, pc: usize) -> Instruction {
-        let protoid = self.borrow_fs(None).f;
-        state.get_instruction(protoid, pc)
-    }
-    pub(crate) fn search_var(
+    /// Return the previous instruction of the current code. If there
+    /// may be a jump target between the current instruction and the
+    /// previous one, return an invalid instruction (to avoid wrong
+    /// optimizations).
+    pub(crate) fn try_borrow_mut_previous_code<'a>(
         &self,
-        state: &mut LuaState,
-        fs_id: Option<usize>,
-        name: &str,
-    ) -> Option<usize> {
-        let nactvar = self.borrow_fs(fs_id).nactvar;
-        if nactvar > 0 {
-            (0..nactvar)
-                .rev()
-                .find(|&i| name == self.borrow_loc_var(state, fs_id, i).name)
+        state: &'a mut LuaState,
+    ) -> Option<&'a mut u32> {
+        let pc = self.next_pc(state);
+        if pc as i32 > self.borrow_fs(None).last_target {
+            let protoid = self.borrow_fs(None).f;
+            Some(&mut state.protos[protoid].code[pc - 1])
         } else {
             None
         }
     }
-
-    pub(crate) fn borrow_loc_var<'a>(
-        &self,
-        state: &'a mut LuaState,
-        fs_id: Option<usize>,
-        i: usize,
-    ) -> &'a LocVar {
-        let first_local = self.borrow_fs(fs_id).first_local;
-        let idx = self.dyd.actvar[first_local + i];
-        let proto = self.borrow_proto(state, fs_id);
-        debug_assert!(idx < proto.locvars.len());
-        &proto.locvars[idx]
+    pub fn get_previous_code(&self, state: &mut LuaState) -> Instruction {
+        let pc = self.next_pc(state) - 1;
+        let protoid = self.borrow_fs(None).f;
+        state.get_instruction(protoid, pc)
     }
+    pub fn get_code(&self, state: &LuaState, pc: usize) -> Instruction {
+        let protoid = self.borrow_fs(None).f;
+        state.get_instruction(protoid, pc)
+    }
+
+    /// Look for an active local variable with the name 'name' in the
+    /// function 'fs_id'. If found, initialize 'var' with it and return
+    /// its expression kind; otherwise return -1.
+    pub(crate) fn search_var(
+        &self,
+        fs_id: Option<usize>,
+        name: &str,
+        var: &mut ExpressionDesc,
+    ) -> Option<ExpressionKind> {
+        let (nactvar, first_local) = {
+            let fs = self.borrow_fs(fs_id);
+            (fs.nactvar, fs.first_local as i32)
+        };
+        for i in (0..nactvar).rev() {
+            let vd = self.borrow_loc_var_desc(fs_id, i);
+            if vd.name == name {
+                if vd.kind == VarKind::CompileTimeConst {
+                    var.init(ExpressionKind::Constant, first_local + i as i32);
+                } else {
+                    var.init_var(i, vd.ridx as i32);
+                }
+                return Some(var.k);
+            }
+        }
+        None
+    }
+
+    ///  Get the debug-information entry for current variable 'vidx'.
     pub(crate) fn borrow_mut_local_var<'a>(
         &mut self,
         state: &'a mut LuaState,
-        id: usize,
-    ) -> &'a mut LocVar {
-        let first_local = self.borrow_fs(None).first_local;
-        let idx = self.dyd.actvar[first_local + id];
-        let proto = self.borrow_mut_proto(state, None);
-        debug_assert!(idx < proto.locvars.len());
-        &mut proto.locvars[idx]
+        vidx: usize,
+    ) -> Option<&'a mut LocVar> {
+        let vd = self.borrow_loc_var_desc(None, vidx);
+        if vd.kind == VarKind::CompileTimeConst {
+            None
+        } else {
+            let idx = vd.pidx;
+            let proto = self.borrow_mut_proto(state, None);
+            debug_assert!(idx < proto.locvars.len());
+            Some(&mut proto.locvars[idx])
+        }
     }
 
     /// read next character in the stream
@@ -387,7 +438,7 @@ impl<T> LexState<T> {
         loop {
             match self.current {
                 None => {
-                    return Ok(None);
+                    return Ok(Some(Reserved::Eos.into()));
                 }
                 Some('\n') | Some('\r') => {
                     self.inc_line_number(state)?;
@@ -453,6 +504,10 @@ impl<T> LexState<T> {
                             self.next_char(state);
                             return Ok(Some(Reserved::Le.into()));
                         }
+                        Some('<') => {
+                            self.next_char(state);
+                            return Ok(Some(Reserved::Shl.into()));
+                        }
                         _ => {
                             return Ok(Some(Token::new('<')));
                         }
@@ -465,8 +520,24 @@ impl<T> LexState<T> {
                             self.next_char(state);
                             return Ok(Some(Reserved::Ge.into()));
                         }
+                        Some('>') => {
+                            self.next_char(state);
+                            return Ok(Some(Reserved::Shr.into()));
+                        }
                         _ => {
                             return Ok(Some(Token::new('>')));
+                        }
+                    }
+                }
+                Some('/') => {
+                    self.next_char(state);
+                    match self.current {
+                        Some('/') => {
+                            self.next_char(state);
+                            return Ok(Some(Reserved::IntDiv.into()));
+                        }
+                        _ => {
+                            return Ok(Some(Token::new('/')));
                         }
                     }
                 }
@@ -510,7 +581,7 @@ impl<T> LexState<T> {
                     } else if !self.is_current_digit() {
                         return Ok(Some(Token::new('.')));
                     } else {
-                        return self.read_numeral(state).map(|x| Some(x));
+                        return self.read_numeral(state).map(Some);
                     }
                 }
                 Some(c) => {
@@ -518,7 +589,7 @@ impl<T> LexState<T> {
                         self.next_char(state);
                         continue;
                     } else if self.is_current_digit() {
-                        return self.read_numeral(state).map(|x| Some(x));
+                        return self.read_numeral(state).map(Some);
                     } else if self.is_current_alphabetic() || self.is_current('_') {
                         // identifier or reserved word
                         self.save_and_next(state);
@@ -588,6 +659,7 @@ impl<T> LexState<T> {
     }
 
     pub fn syntax_error(&self, state: &mut LuaState, msg: &str) -> Result<(), LuaError> {
+        state.push_string(msg);
         let token = self.t.as_ref().map(|t| t.token);
         self.lex_error(state, msg, token)
     }
@@ -711,8 +783,10 @@ impl<T> LexState<T> {
             Ok(None)
         } else {
             // return the string without the [==[ ]==] delimiters
+            let start_idx = 2 + sep as usize;
+            let end_idx = self.buff.len() - 2 - sep as usize;
             Ok(Some(
-                self.buff[2 + sep as usize..self.buff.len() - 2 * (sep as usize + 2)]
+                self.buff[start_idx..end_idx]
                     .iter()
                     .cloned()
                     .collect::<String>(),
@@ -864,11 +938,7 @@ impl<T> LexState<T> {
                 }
             }
             None => {
-                return self.lex_error::<Token>(
-                    state,
-                    "malformed number",
-                    Some(Reserved::Float as u32),
-                );
+                self.lex_error::<Token>(state, "malformed number", Some(Reserved::Float as u32))
             }
         }
     }
@@ -895,12 +965,12 @@ impl<T> LexState<T> {
     ) -> Result<(), LuaError> {
         let msg = {
             let proto = self.borrow_proto(state, None);
-            if proto.linedefined == 0 {
+            if proto.line_defined == 0 {
                 format!("main function has more than {} {}", limit, what)
             } else {
                 format!(
                     "function at line {} has more than {} {}",
-                    proto.linedefined, limit, what
+                    proto.line_defined, limit, what
                 )
             }
         };
@@ -913,14 +983,10 @@ impl<T> LexState<T> {
         Ok(())
     }
 
+    /// Adds a new label/goto in the corresponding list.
     pub(crate) fn new_label_entry(&self, label: String, line: usize, pc: i32) -> LabelDesc {
         let nactvar = self.borrow_fs(None).nactvar;
-        LabelDesc {
-            name: label,
-            pc: pc as usize,
-            line,
-            nactvar,
-        }
+        LabelDesc::new(label, line, pc as usize, nactvar)
     }
 
     /// semantic error
@@ -950,6 +1016,53 @@ impl<T> LexState<T> {
             }
         }
         Ok(())
+    }
+
+    /// Return the number of variables in the register stack for the given
+    /// function.
+    pub(crate) fn get_nvar_stack(&self) -> usize {
+        let nactvar = self.borrow_fs(None).nactvar;
+        self.reg_level(nactvar)
+    }
+
+    /// Convert 'nvar', a compiler index level, to its corresponding
+    /// register. For that, search for the highest variable below that level
+    /// that is in a register and uses its register index ('ridx') plus one.
+    pub(crate) fn reg_level(&self, nvar: usize) -> usize {
+        let mut nvar = nvar.min(self.dyd.actvar.len());
+        while nvar > 0 {
+            nvar -= 1;
+            let vd = self.borrow_loc_var_desc(None, nvar);
+            if vd.kind != VarKind::CompileTimeConst {
+                return vd.ridx + 1;
+            }
+        }
+        0 // no variables in registers
+    }
+
+    /// Return the "variable description" (Vardesc) of a given variable.
+    /// (Unless noted otherwise, all variables are referred to by their
+    /// compiler indices.)
+    pub(crate) fn borrow_loc_var_desc(&self, fs_id: Option<usize>, vidx: usize) -> &VarDesc {
+        let first_local = self.borrow_fs(fs_id).first_local;
+        &self.dyd.actvar[first_local + vidx]
+    }
+    pub(crate) fn borrow_mut_loc_var_desc(
+        &mut self,
+        fs_id: Option<usize>,
+        vidx: usize,
+    ) -> &mut VarDesc {
+        let first_local = self.borrow_fs(fs_id).first_local;
+        &mut self.dyd.actvar[first_local + vidx]
+    }
+    /// Mark that current block has a to-be-closed variable.
+    pub(crate) fn mark_to_be_closed(&mut self) {
+        {
+            let bl = self.borrow_mut_fs(None).borrow_mut_block();
+            bl.upval = true;
+            bl.is_inside_tbc = true;
+        }
+        self.borrow_mut_fs(None).need_close = true;
     }
 }
 
@@ -1013,7 +1126,7 @@ fn strx2number(svalue: &str) -> Option<f64> {
         }
         while it < len && chars[it].is_ascii_digit() {
             // read exponent
-            exp1 = exp1 * 10.0 + (chars[it] as u8 - '0' as u8) as f64;
+            exp1 = exp1 * 10.0 + (chars[it] as u8 - b'0') as f64;
             it += 1;
         }
         if neg1 {

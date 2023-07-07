@@ -1,6 +1,6 @@
 //! Basic library
 
-use crate::{api, lex::str2d, luaL, state::LuaState, LuaRustFunction, LUA_VERSION};
+use crate::{api, lex::str2d, luaL, state::LuaState, LuaError, LuaRustFunction, LUA_VERSION};
 
 use super::LibReg;
 
@@ -90,38 +90,38 @@ const BASE_FUNCS: [LibReg; 21] = [
         func: luab_xpcall,
     },
 ];
-pub fn luab_assert(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn luab_assert(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn luab_dofile(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn luab_dofile(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn luab_error(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn luab_error(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn luab_getmetatable(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn luab_getmetatable(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn luab_load(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn luab_load(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn luab_loadfile(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn luab_loadfile(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn luab_pcall(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn luab_pcall(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
 /// If your system does not support `stdout', you can just remove this function.
 /// If you need, you can define your own `print' function, following this
 /// model but changing `println!' to put the strings at a proper place
 /// (a console window or a log file, for instance).
-pub fn luab_print(s: &mut LuaState) -> Result<i32, ()> {
+pub fn luab_print(s: &mut LuaState) -> Result<i32, LuaError> {
     let n = api::get_top(s) as isize; // number of arguments
     api::get_global(s, "tostring");
     for i in 1..=n {
         api::push_value(s, -1); // function to be called
         api::push_value(s, i); // value to print
-        api::call(s, 1, 1).map_err(|_| ())?;
+        api::call(s, 1, 1)?;
         match api::to_string(s, -1) {
             // get result
             Some(svalue) => {
@@ -132,7 +132,7 @@ pub fn luab_print(s: &mut LuaState) -> Result<i32, ()> {
                 api::pop(s, 1);
             }
             _ => {
-                luaL::error(s, "'tostring' must return a string to 'print'").map_err(|_| ())?;
+                luaL::error(s, "'tostring' must return a string to 'print'")?;
                 unreachable!()
             }
         }
@@ -140,29 +140,29 @@ pub fn luab_print(s: &mut LuaState) -> Result<i32, ()> {
     _ = writeln!(s.stdout);
     Ok(0)
 }
-pub fn luab_rawequal(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn luab_rawequal(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn luab_rawlen(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn luab_rawlen(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn luab_rawget(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn luab_rawget(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn luab_rawset(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn luab_rawset(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn luab_select(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn luab_select(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn luab_setmetatable(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn luab_setmetatable(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn luab_tonumber(state: &mut LuaState) -> Result<i32, ()> {
+pub fn luab_tonumber(state: &mut LuaState) -> Result<i32, LuaError> {
     let base = if api::get_top(state) == 2 {
         10
     } else {
-        luaL::check_integer(state, 2).map_err(|_| ())?
+        luaL::check_integer(state, 2)?
     };
     if base == 10 {
         // standard conversion
@@ -171,9 +171,9 @@ pub fn luab_tonumber(state: &mut LuaState) -> Result<i32, ()> {
         return Ok(1);
     }
     if !(2..=36).contains(&base) {
-        luaL::arg_error(state, 2, "base out of range").map_err(|_| ())?;
+        luaL::arg_error(state, 2, "base out of range")?;
     }
-    let s1 = luaL::check_string(state, 1).map_err(|_| ())?;
+    let s1 = luaL::check_string(state, 1)?;
     if let Some(n) = str2d(&s1) {
         api::push_number(state, n);
         return Ok(1);
@@ -182,18 +182,18 @@ pub fn luab_tonumber(state: &mut LuaState) -> Result<i32, ()> {
     api::push_nil(state);
     Ok(1)
 }
-pub fn luab_tostring(s: &mut LuaState) -> Result<i32, ()> {
+pub fn luab_tostring(s: &mut LuaState) -> Result<i32, LuaError> {
     // TODO hangle metamethods
     let value = s.index2adr(1);
     let svalue = format!("{}", value);
     api::push_string(s, &svalue);
     Ok(1)
 }
-pub fn luab_type(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn luab_type(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
 
-pub fn luab_xpcall(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn luab_xpcall(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
 
@@ -202,7 +202,7 @@ fn pairs_meta(
     method: &str,
     is_zero: bool,
     iter: LuaRustFunction,
-) -> Result<i32, ()> {
+) -> Result<i32, LuaError> {
     if !luaL::get_meta_field(s, 1, method) {
         // no metamethod?
         luaL::check_table(s, 1)?; // argument must be a table
@@ -215,21 +215,21 @@ fn pairs_meta(
         }
     } else {
         api::push_value(s, 1); // argument 'self' to metamethod
-        api::call(s, 1, 3).map_err(|_| ())?; // get 3 values from metamethod
+        api::call(s, 1, 3)?; // get 3 values from metamethod
     }
     Ok(3)
 }
 
 /// 'ipairs' function. Returns 'ipairsaux', given "table", 0.
 /// (The given "table" may not be a table.)
-pub fn luab_ipairs(s: &mut LuaState) -> Result<i32, ()> {
-    luaL::check_any(s, 1).map_err(|_| ())?;
+pub fn luab_ipairs(s: &mut LuaState) -> Result<i32, LuaError> {
+    luaL::check_any(s, 1)?;
     api::push_rust_function(s, ipairs_aux, 0); // iteration function
     api::push_value(s, 1); // state
     api::push_integer(s, 0); // initial value
     Ok(3)
 }
-pub fn ipairs_aux(s: &mut LuaState) -> Result<i32, ()> {
+pub fn ipairs_aux(s: &mut LuaState) -> Result<i32, LuaError> {
     let i = luaL::check_integer(s, 2)? + 1; // next value
     luaL::check_table(s, 1)?;
     api::push_integer(s, i);
@@ -240,11 +240,11 @@ pub fn ipairs_aux(s: &mut LuaState) -> Result<i32, ()> {
         Ok(2)
     }
 }
-pub fn luab_pairs(s: &mut LuaState) -> Result<i32, ()> {
+pub fn luab_pairs(s: &mut LuaState) -> Result<i32, LuaError> {
     pairs_meta(s, "__pairs", false, luab_next)
 }
 
-pub fn luab_next(s: &mut LuaState) -> Result<i32, ()> {
+pub fn luab_next(s: &mut LuaState) -> Result<i32, LuaError> {
     luaL::check_table(s, 1)?;
     api::set_top(s, 2); // create a 2nd argument if there isn't one
     if api::next(s, 1) {
@@ -255,7 +255,7 @@ pub fn luab_next(s: &mut LuaState) -> Result<i32, ()> {
     }
 }
 
-pub fn lib_open_base(state: &mut LuaState) -> Result<i32, ()> {
+pub fn lib_open_base(state: &mut LuaState) -> Result<i32, LuaError> {
     // set global _G
     api::push_global_table(state);
     api::push_global_table(state);

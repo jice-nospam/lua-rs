@@ -1,6 +1,6 @@
 //! Library for Table Manipulation
 
-use crate::{api, luaL, state::LuaState, LuaInteger};
+use crate::{api, luaL, state::LuaState, LuaError, LuaInteger};
 
 use super::LibReg;
 
@@ -31,8 +31,8 @@ const TAB_FUNCS: [LibReg; 6] = [
     },
 ];
 
-pub fn tunpack(state: &mut LuaState) -> Result<i32, ()> {
-    luaL::check_table(state, 1).map_err(|_| ())?;
+pub fn tunpack(state: &mut LuaState) -> Result<i32, LuaError> {
+    luaL::check_table(state, 1)?;
     let mut i = luaL::opt_integer(state, 2).unwrap_or(1);
     let len = luaL::obj_len(state, 1);
     let e = luaL::opt_integer(state, 3).unwrap_or(len as LuaInteger);
@@ -51,23 +51,23 @@ pub fn tunpack(state: &mut LuaState) -> Result<i32, ()> {
     Ok(n as i32)
 }
 
-pub fn tconcat(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn tconcat(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn tpack(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn tpack(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn tinsert(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn tinsert(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn tremove(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn tremove(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
-pub fn sort(_state: &mut LuaState) -> Result<i32, ()> {
+pub fn sort(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
 }
 
-pub fn lib_open_table(state: &mut LuaState) -> Result<i32, ()> {
+pub fn lib_open_table(state: &mut LuaState) -> Result<i32, LuaError> {
     luaL::new_lib(state, &TAB_FUNCS);
     Ok(1)
 }

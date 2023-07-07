@@ -1,11 +1,14 @@
 # Lua reimplementation in pure, safe Rust
 
+[![Rust](https://github.com/jice-nospam/lua-rs/actions/workflows/rust.yml/badge.svg)](https://github.com/jice-nospam/lua-rs/actions)
+
 ## Status of the project
 
 The current goal is to reimplement each version one after another to have all the latest language features.
 
-The core of the 5.1 version of the language is implemented in the [v5.1.x](https://github.com/jice-nospam/lua-rs/tree/v5.1.x) branch but api and auxlib are very incomplete.
-It has not been much tested beyond the unit tests and the benchmarks ([see benches/lua](benches/lua))
+There are branches for each version from 5.1 to 5.4, but api and auxlib are not complete on these branches, and the implementation has not been much tested beyond the unit tests and the benchmarks ([see benches/lua](benches/lua)). Consider them in alpha stage.
+
+The core of the 5.1 version of the language is implemented in the [v5.1.x](https://github.com/jice-nospam/lua-rs/tree/v5.1.x) branch.
 
 The core of the 5.2 version of the language is implemented in the [v5.2.x](https://github.com/jice-nospam/lua-rs/tree/v5.2.x) branch with `goto` support. The bitwise operations library is not implemented as it's scrapped in 5.3.
 
@@ -25,13 +28,19 @@ Current status :
 - standard libraries : [see src/libs/README.md](src/libs/README.md)
 - api and auxlib : [see src/README.md](src/README.md)
 
-### NOT YET IMPLEMENTED
+### NOT IMPLEMENTED
 
 - user data
 - metamethods
 - hooks
 - coroutines
+- to-be-closed variables
+- binary chunks
 - tables can only be indexed with numbers or strings
+
+## features
+
+- `debug_logs` : disassemble code on stdout when running
 
 ## compile (native, linux)
 

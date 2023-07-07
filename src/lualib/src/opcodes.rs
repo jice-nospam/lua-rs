@@ -2,188 +2,370 @@
 
 use crate::limits::Instruction;
 
-///  We assume that instructions are unsigned numbers.
-/// All instructions have an opcode in the first 6 bits.
-/// Instructions can have the following fields:
-/// 'A' : 8 bits
-/// 'B' : 9 bits
-/// 'C' : 9 bits
-/// 'Ax' : 26 bits ('A', 'B', and 'C' together)
-/// 'Bx' : 18 bits ('B' and 'C' together)
-/// 'sBx' : signed Bx
+/// We assume that instructions are unsigned 32-bit integers.
+/// All instructions have an opcode in the first 7 bits.
+/// Instructions can have the following formats:
 
-/// A signed argument is represented in excess K; that is, the number
-/// value is the unsigned value minus K. K is exactly the maximum value
-/// for that argument (so that -max is represented by 0, and +max is
-/// represented by 2*max), which is half the maximum for the corresponding
-/// unsigned argument.
+///         3 3 2 2 2 2 2 2 2 2 2 2 1 1 1 1 1 1 1 1 1 1 0 0 0 0 0 0 0 0 0 0
+///         1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0
+/// iABC          C(8)     |      B(8)     |k|     A(8)      |   Op(7)     |
+/// iABx                Bx(17)               |     A(8)      |   Op(7)     |
+/// iAsBx              sBx (signed)(17)      |     A(8)      |   Op(7)     |
+/// iAx                           Ax(25)                     |   Op(7)     |
+/// isJ                           sJ (signed)(25)            |   Op(7)     |
+
+/// A signed argument is represented in excess K: the represented value is
+/// the written unsigned value minus K, where K is half the maximum for the
+/// corresponding unsigned argument.
 
 /// size and position of opcode arguments.
-pub const SIZE_C: usize = 9;
-pub const SIZE_B: usize = 9;
-pub const SIZE_BX: usize = SIZE_C + SIZE_B;
+pub const SIZE_C: usize = 8;
+pub const SIZE_B: usize = 8;
+pub const SIZE_BX: usize = SIZE_C + SIZE_B + 1;
 pub const SIZE_A: usize = 8;
-pub const SIZE_AX: usize = SIZE_C + SIZE_B + SIZE_A;
-pub const SIZE_OP: usize = 6;
+pub const SIZE_AX: usize = SIZE_BX + SIZE_A;
+pub const SIZE_SJ: usize = SIZE_BX + SIZE_A;
+pub const SIZE_OP: usize = 7;
 
 pub const POS_OP: usize = 0;
 pub const POS_A: usize = POS_OP + SIZE_OP;
-pub const POS_C: usize = POS_A + SIZE_A;
-pub const POS_B: usize = POS_C + SIZE_C;
+pub const POS_K: usize = POS_A + SIZE_A;
+pub const POS_B: usize = POS_K + 1;
+pub const POS_C: usize = POS_B + SIZE_B;
 pub const POS_AX: usize = POS_A;
-pub const POS_BX: usize = POS_C;
+pub const POS_BX: usize = POS_K;
+pub const POS_SJ: usize = POS_A;
 
 /// this bit 1 means constant (0 means register)
-pub const BIT_RK: u32 = 1 << (SIZE_B - 1);
+pub const BIT_RK: u32 = 1 << POS_K;
 pub const MAX_INDEX_RK: usize = BIT_RK as usize - 1;
 
 /// number of list items to accumulate before a SETLIST instruction
 pub const LFIELDS_PER_FLUSH: u32 = 50;
 
 #[inline]
-pub(crate) const fn rk_as_k(val: u32) -> u32 {
-    val | BIT_RK
-}
-#[inline]
 pub(crate) const fn rk_is_k(val: u32) -> bool {
     val & BIT_RK != 0
 }
 
 pub const MAXARG_A: usize = (1 << SIZE_A) - 1;
-pub const _MAXARG_B: usize = (1 << SIZE_B) - 1;
+pub const MAXARG_B: usize = (1 << SIZE_B) - 1;
 pub const MAXARG_C: usize = (1 << SIZE_C) - 1;
 pub const MAXARG_AX: usize = (1 << SIZE_AX) - 1;
 pub const MAXARG_BX: usize = (1 << SIZE_BX) - 1;
-pub const MAXARG_SBX: i32 = (MAXARG_BX >> 1) as i32;
+pub const MAXARG_SJ: usize = (1 << SIZE_SJ) - 1;
+pub const OFFSET_SBX: i32 = (MAXARG_BX >> 1) as i32;
+pub const OFFSET_SJ: i32 = (MAXARG_SJ >> 1) as i32;
+pub const OFFSET_SC: i32 = (MAXARG_C >> 1) as i32;
 /// value for an invalid register
 pub const NO_REG: u32 = MAXARG_A as u32;
 pub const NO_JUMP: i32 = -1;
 
 #[cfg(feature = "debug_logs")]
-pub(crate) const OPCODE_NAME: [&str; 47] = [
-    "move", "loadk", "loadkx", "loadbool", "loadnil", "getupval", "gettabup", "gettable",
-    "settabup", "setupval", "settable", "newtable", "opself", "add", "sub", "mul", "mod", "pow",
-    "div", "idiv", "band", "bor", "bxor", "shl", "shr", "unm", "bnot", "not", "len", "concat",
-    "jmp", "eq", "lt", "le", "test", "testset", "call", "tailcall", "return", "forloop", "forprep",
-    "tforcall", "tforloop", "setlist", "closure", "vararg", "extraarg",
+pub(crate) const OPCODE_NAME: [&str; 83] = [
+    "move",
+    "loadi",
+    "loadf",
+    "loadk",
+    "loadkx",
+    "loadfalse",
+    "loadfalseskip",
+    "loadtrue",
+    "loadnil",
+    "getupval",
+    "setupval",
+    "gettabup",
+    "gettable",
+    "geti",
+    "getfield",
+    "settabup",
+    "settable",
+    "seti",
+    "setfield",
+    "newtable",
+    "self",
+    "addi",
+    "addk",
+    "subk",
+    "mulk",
+    "modk",
+    "powk",
+    "divk",
+    "idivk",
+    "bandk",
+    "bork",
+    "bxork",
+    "shri",
+    "shli",
+    "add",
+    "sub",
+    "mul",
+    "mod",
+    "pow",
+    "div",
+    "idiv",
+    "band",
+    "bor",
+    "bxor",
+    "shl",
+    "shr",
+    "mmbin",
+    "mmbini",
+    "mmbink",
+    "unm",
+    "bnot",
+    "not",
+    "len",
+    "concat",
+    "close",
+    "tbc",
+    "jmp",
+    "eq",
+    "lt",
+    "le",
+    "eqk",
+    "eqi",
+    "lti",
+    "lei",
+    "gti",
+    "gei",
+    "test",
+    "testset",
+    "call",
+    "tailcall",
+    "return",
+    "return0",
+    "return1",
+    "forloop",
+    "forprep",
+    "tforprep",
+    "tforcall",
+    "tforloop",
+    "setlist",
+    "closure",
+    "vararg",
+    "varargprep",
+    "extraarg",
 ];
 
 #[rustfmt::skip]
 mod unformatted {
 
-//                              <---B---><---C---><---A-->opcode
-pub const MASK_SET_OP: u32 =  0b00000000000000000000000000111111;
-pub const MASK_UNSET_OP: u32 =0b11111111111111111111111111000000;
-pub const MASK_SET_A: u32 =   0b00000000000000000011111111000000;
-pub const MASK_SET_C: u32 =   0b00000000011111111100000000000000;
-pub const MASK_SET_B: u32 =   0b11111111100000000000000000000000;
-pub const MASK_UNSET_A: u32 = 0b11111111111111111100000000111111;
-pub const MASK_UNSET_C: u32 = 0b11111111100000000011111111111111;
-pub const MASK_UNSET_B: u32 = 0b00000000011111111111111111111111;
-pub const MASK_SET_BX: u32 =  0b11111111111111111100000000000000;
-pub const MASK_UNSET_BX: u32 =0b00000000000000000011111111111111;
-pub const MASK_SET_AX: u32 =  0b11111111111111111111111111100000;
-pub const _MASK_UNSET_AX: u32=0b00000000000000000000000000011111;
+//                              <--C---><--B--->k<---A--> opcode
+pub const MASK_SET_OP: u32 =  0b00000000000000000000000001111111;
+pub const MASK_UNSET_OP: u32 =0b11111111111111111111111110000000;
+pub const MASK_SET_A: u32 =   0b00000000000000000111111110000000;
+pub const MASK_UNSET_A: u32 = 0b11111111111111111000000001111111;
+pub const MASK_SET_K: u32 =   0b00000000000000001000000000000000;
+pub const MASK_UNSET_K: u32 = 0b11111111111111110111111111111111;
+pub const MASK_SET_B: u32 =   0b00000000111111110000000000000000;
+pub const MASK_UNSET_B: u32 = 0b11111111000000001111111111111111;
+pub const MASK_SET_C: u32 =   0b11111111000000000000000000000000;
+pub const MASK_UNSET_C: u32 = 0b00000000111111111111111111111111;
+pub const MASK_SET_BX: u32 =  0b11111111111111111000000000000000;
+pub const MASK_UNSET_BX: u32 =0b00000000000000000111111111111111;
+pub const MASK_SET_AX: u32 =  0b11111111111111111111111110000000;
+pub const MASK_SET_SJ: u32 =  0b11111111111111111111111110000000;
+pub const _MASK_UNSET_AX: u32=0b00000000000000000000000001111111;
+pub const MASK_UNSET_SJ: u32 =0b00000000000000000000000001111111;
 
 #[derive(PartialEq,Clone,Copy)]
+#[allow(clippy::tabs_in_doc_comments)]
 pub enum OpCode {
     //----------------------------------------------------------------------
-    //          args    description
+    //          args        description
     //name
     //----------------------------------------------------------------------
-    ///         A B     R(A) := R(B)
+    ///         A B         R(A) := R(B)
     Move = 0,
-    ///         A Bx    R(A) := Kst(Bx)
+    ///         A sBx	    R[A] := sBx	
+    LoadI,
+    ///         A sBx	    R[A] := (lua_Number)sBx
+    LoadF,
+    ///         A Bx        R(A) := Kst(Bx)
     LoadK,
-    ///         A       R(A) := Kst(extra arg)
+    ///         A           R(A) := Kst(extra arg)
     LoadKx,
-    ///         A B C   R(A) := (Bool)B; if (C) pc++
-    LoadBool,
-    ///         A B     R(A) := ... := R(B) := nil
+    ///         A           R(A) := false
+    LoadFalse,
+    ///         A           R(A) := false, pc ++
+    LoadFalseSkip,
+    ///         A           R(A) := true
+    LoadTrue,
+    ///         A B         R[A], R[A+1], ..., R[A+B] := nil
     LoadNil,
-    ///         A B     R(A) := UpValue[B]
+    ///         A B         R(A) := UpValue[B]
     GetUpVal,
-    ///         A B C   R(A) := UpValue[B][RK(C)]
-    GetTabUp,
-    ///         A B C   R(A) := R(B)[RK(C)]
-    GetTable,
-    ///         A B C   UpValue[A][RK(B)] := RK(C)
-    SetTabUp,
-    ///         A B     UpValue[B] := R(A)
+    ///         A B         UpValue[B] := R(A)
     SetupVal,
-    ///         A B C   R(A)[RK(B)] := RK(C)
+
+    ///         A B C       R[A] := UpValue[B][K[C]:string]	
+    GetTabUp,
+    ///         A B C       R(A) := R(B)[R(C)]
+    GetTable,
+    ///         A B C	    R[A] := R[B][C]
+    GetI,
+    ///         A B C	    R[A] := R[B][K[C]:string]
+    GetField,
+
+    ///         A B C       UpValue[A][K[B]:string] := RK(C)
+    SetTabUp,
+    ///         A B C       R[A][R[B]] := RK(C)	
     SetTable,
-    ///         A B C   R(A) := {} (size = B,C)
+    ///         A B C	    R[A][B] := RK(C)
+    SetI,
+    ///         A B C	    R[A][K[B]:string] := RK(C)
+    SetField,
+
+    ///         A B C k     R[A] := {}	
     NewTable,
-    ///         A B C   R(A+1) := R(B); R(A) := R(B)[RK(C)]
+
+    ///         A B C       R[A+1] := R[B]; R[A] := R[B][RK(C):string]
     OpSelf,
-    ///         A B C   R(A) := RK(B) + RK(C)
+
+    ///         A B sC	    R[A] := R[B] + sC	
+    AddI,
+
+    ///         A B C	    R[A] := R[B] + K[C]:number
+    AddK,    
+    ///         A B C	    R[A] := R[B] - K[C]:number
+    SubK,
+    ///         A B C	    R[A] := R[B] * K[C]:number
+    MulK,
+    ///         A B C	    R[A] := R[B] % K[C]:number
+    ModK,
+    ///         A B C	    R[A] := R[B] ^ K[C]:number
+    PowK,
+    ///         A B C	    R[A] := R[B] / K[C]:number
+    DivK,
+    ///         A B C	    R[A] := R[B] // K[C]:number
+    IntegerDivK,
+
+    ///         A B C	    R[A] := R[B] & K[C]:integer
+    BinaryAndK,
+    ///         A B C	    R[A] := R[B] | K[C]:integer
+    BinaryOrK,
+    ///         A B C	    R[A] := R[B] ~ K[C]:integer
+    BinaryXorK,
+
+    ///         A B sC	    R[A] := R[B] >> sC
+    ShrI,
+    ///         A B sC	    R[A] := sC << R[B]
+    ShlI,
+
+    ///         A B C	    R[A] := R[B] + R[C]	
     Add,
-    ///         A B C   R(A) := RK(B) - RK(C)
+    ///         A B C	    R[A] := R[B] - R[C]	
     Sub,
-    ///         A B C   R(A) := RK(B) * RK(C)
+    ///         A B C	    R[A] := R[B] * R[C]	
     Mul,
-    ///         A B C   R(A) := RK(B) % RK(C)
+    ///         A B C	    R[A] := R[B] % R[C]	
     Mod,
-    ///         A B C   R(A) := RK(B) ^ RK(C)
+    ///         A B C	    R[A] := R[B] ^ R[C]	
     Pow,
-    ///         A B C   R(A) := RK(B) / RK(C)
+    ///         A B C	    R[A] := R[B] / R[C]	
     Div,
-    ///         A B C   R(A) := RK(B) // RK(C)
+    ///         A B C	    R[A] := R[B] // R[C]	
     IntegerDiv,
-    ///         A B C   R(A) := RK(B) & RK(C)
+
+    ///         A B C	    R[A] := R[B] & R[C]	
     BinaryAnd,
-    ///         A B C   R(A) := RK(B) | RK(C)
+    ///         A B C	    R[A] := R[B] | R[C]
     BinaryOr,
-    ///         A B C   R(A) := RK(B) ~ RK(C)
+    ///         A B C	    R[A] := R[B] ~ R[C]	
     BinaryXor,
-    ///         A B C   R(A) := RK(B) << RK(C)
+
+    ///         A B C	    R[A] := R[B] << R[C]
     Shl,
-    ///         A B C   R(A) := RK(B) >> RK(C)
+    ///         A B C	    R[A] := R[B] >> R[C]
     Shr,
-    ///         A B     R(A) := -R(B)
+
+    ///         A B C	    call C metamethod over R[A] and R[B]
+    MMBin,
+    ///         A sB C k	call C metamethod over R[A] and sB
+    MMBinI,
+    ///         A B C k		call C metamethod over R[A] and K[B]
+    MMBinK,
+
+    ///         A B         R(A) := -R(B)
     UnaryMinus,
-    ///         A B     R(A) := ~R(B)
+    ///         A B         R(A) := ~R(B)
     BinaryNot,
-    ///         A B     R(A) := not R(B)
+    ///         A B         R(A) := not R(B)
     Not,
-    ///         A B     R(A) := length of R(B)
+    ///         A B         R(A) := #R(B) (length operator)
     Len,
-    ///         A B C   R(A) := R(B).. ... ..R(C)
+
+    ///         A B	        R[A] := R[A].. ... ..R[A + B - 1]
     Concat,
-    ///         sBx     pc+=sBx
+
+    ///         A	        close all upvalues >= R[A]
+    Close,
+    ///         A	        mark variable A "to be closed"
+    ToBeClosed,
+    ///        	sJ	        pc += sJ
     Jmp,
-    ///         A B C   if ((RK(B) == RK(C)) ~= A) then pc++
+    ///         A B k	    if ((R[A] == R[B]) ~= k) then pc++
     Eq,
-    ///         A B C   if ((RK(B) <  RK(C)) ~= A) then pc++
+    ///         A B k	    if ((R[A] <  R[B]) ~= k) then pc++
     Lt,
-    ///         A B C   if ((RK(B) <= RK(C)) ~= A) then pc++
+    ///         A B k	    if ((R[A] <= R[B]) ~= k) then pc++
     Le,
-    ///         A C     if not (R(A) <=> C) then pc++
+
+    ///         A B k	    if ((R[A] == K[B]) ~= k) then pc++
+    EqK,
+    ///         A sB k	    if ((R[A] == sB) ~= k) then pc++
+    EqI,
+    ///         A sB k	    if ((R[A] < sB) ~= k) then pc++
+    LtI,
+    ///         A sB k	    if ((R[A] <= sB) ~= k) then pc++
+    LeI,
+    ///         A sB k	    if ((R[A] > sB) ~= k) then pc++
+    GtI,
+    ///         A sB k	    if ((R[A] >= sB) ~= k) then pc++
+    GeI,
+
+    ///         A k	        if (not R[A] == k) then pc++
     Test,
-    ///         A B C   if (R(B) <=> C) then R(A) := R(B) else pc++
+    ///         A B k	    if (not R[B] == k) then pc++ else R[A] := R[B]
     TestSet,
-    ///         A B C   R(A), ... ,R(A+C-2) := R(A)(R(A+1), ... ,R(A+B-1))
+
+    ///         A B C	    R[A], ... ,R[A+C-2] := R[A](R[A+1], ... ,R[A+B-1])
     Call,
-    ///         A B C   return R(A)(R(A+1), ... ,R(A+B-1))
+    ///         A B C k	    return R[A](R[A+1], ... ,R[A+B-1])
     TailCall,
-    ///         A B     return R(A), ... ,R(A+B-2)    (see note)
+
+    ///         A B C k	    return R[A], ... ,R[A+B-2]
     Return,
-    ///         A sBx   R(A)+=R(A+2); if R(A) <?= R(A+1) then { pc+=sBx; R(A+3)=R(A) }
+    ///                     return
+    Return0,
+    ///         A	        return R[A]
+    Return1,
+
+    ///         A Bx	    update counters; if loop continues then pc-=Bx;
     ForLoop,
-    ///         A sBx   R(A)-=R(A+2); pc+=sBx
+    ///         A Bx	    <check values and prepare counters>; if not to run then pc+=Bx+1;
     ForPrep,
-    ///         A C     R(A+3), ... ,R(A+2+C) := R(A)(R(A+1), R(A+2));
+
+    ///         A Bx	    create upvalue for R[A + 3]; pc+=Bx	
+    TForPrep,
+    ///         A C	        R[A+4], ... ,R[A+3+C] := R[A](R[A+1], R[A+2]);
     TForCall,
-    ///         A sBx	if R(A+1) ~= nil then { R(A)=R(A+1); pc += sBx }
+    ///         A Bx	    if R[A+2] ~= nil then { R[A]=R[A+2]; pc -= Bx }	
     TForLoop,
-    ///         A B C   R(A)[(C-1)*FPF+i] := R(A+i), 1 <= i <= B
+
+    ///         A B C k	    R[A][C+i] := R[A+i], 1 <= i <= B
     SetList,
-    ///         A Bx    R(A) := closure(KPROTO[Bx])
+
+    ///         A Bx	    R[A] := closure(KPROTO[Bx])	
     Closure,
-    ///         A B     R(A), R(A+1), ..., R(A+B-1) = vararg
+
+    ///         A C	        R[A], R[A+1], ..., R[A+C-2] = vararg
     VarArg,
-    ///         Ax      extra (larger) argument for previous opcode
+    ///         A	        (adjust vararg parameters)
+    VarArgPrep,
+
+    ///         Ax	        extra (larger) argument for previous opcode
     ExtraArg,
 }
 
@@ -191,15 +373,74 @@ pub enum OpCode {
 pub use unformatted::*;
 
 impl OpCode {
+    /// convert a binary operator opcode into its version with a constant 2nd operand
+    pub(crate) fn to_k(&self) -> Self {
+        match self {
+            OpCode::Add => OpCode::AddK,
+            OpCode::Sub => OpCode::SubK,
+            OpCode::Mul => OpCode::MulK,
+            OpCode::Mod => OpCode::ModK,
+            OpCode::Pow => OpCode::AddK,
+            OpCode::Div => OpCode::DivK,
+            OpCode::IntegerDiv => OpCode::IntegerDivK,
+            OpCode::BinaryAnd => OpCode::BinaryAndK,
+            OpCode::BinaryOr => OpCode::BinaryOrK,
+            OpCode::BinaryXor => OpCode::BinaryXorK,
+            OpCode::Shl => OpCode::ShlI,
+            OpCode::Shr => OpCode::ShrI,
+            _ => unreachable!(),
+        }
+    }
     pub(crate) fn is_test(&self) -> bool {
         matches!(
             self,
             OpCode::Eq
                 | OpCode::Lt
                 | OpCode::Le
+                | OpCode::EqK
+                | OpCode::EqI
+                | OpCode::LtI
+                | OpCode::LeI
+                | OpCode::GtI
+                | OpCode::GeI
                 | OpCode::Test
                 | OpCode::TestSet
-                | OpCode::TForLoop
+        )
+    }
+    pub(crate) fn is_mm(&self) -> bool {
+        matches!(self, OpCode::MMBin | OpCode::MMBinI | OpCode::MMBinK)
+    }
+    pub(crate) fn sets_a(&self) -> bool {
+        !matches!(
+            self,
+            OpCode::SetupVal
+                | OpCode::SetTabUp
+                | OpCode::SetTable
+                | OpCode::SetI
+                | OpCode::SetField
+                | OpCode::MMBin
+                | OpCode::MMBinI
+                | OpCode::MMBinK
+                | OpCode::Close
+                | OpCode::ToBeClosed
+                | OpCode::Jmp
+                | OpCode::Eq
+                | OpCode::Lt
+                | OpCode::Le
+                | OpCode::EqI
+                | OpCode::EqK
+                | OpCode::LtI
+                | OpCode::LeI
+                | OpCode::GtI
+                | OpCode::GeI
+                | OpCode::Test
+                | OpCode::Return
+                | OpCode::Return0
+                | OpCode::Return1
+                | OpCode::TForPrep
+                | OpCode::TForCall
+                | OpCode::SetList
+                | OpCode::ExtraArg
         )
     }
     #[cfg(feature = "debug_logs")]
@@ -218,24 +459,110 @@ impl OpCode {
                 | OpCode::VarArg
         )
     }
-    #[cfg(feature = "debug_logs")]
     pub(crate) fn is_ac(&self) -> bool {
-        matches!(self, OpCode::TForCall | OpCode::Test)
+        matches!(self, OpCode::TForCall | OpCode::VarArg)
     }
-    #[cfg(feature = "debug_logs")]
+    pub(crate) fn is_a(&self) -> bool {
+        matches!(self, OpCode::VarArgPrep)
+    }
     pub(crate) fn is_abx(&self) -> bool {
-        matches!(self, OpCode::LoadK | OpCode::LoadKx | OpCode::Closure)
-    }
-    #[cfg(feature = "debug_logs")]
-    pub(crate) fn is_asbx(&self) -> bool {
         matches!(
             self,
-            OpCode::Jmp | OpCode::ForLoop | OpCode::ForPrep | OpCode::TForLoop
+            OpCode::LoadK
+                | OpCode::LoadKx
+                | OpCode::ForLoop
+                | OpCode::ForPrep
+                | OpCode::TForPrep
+                | OpCode::TForLoop
+                | OpCode::Closure
         )
+    }
+    pub(crate) fn is_asbx(&self) -> bool {
+        matches!(self, OpCode::LoadI | OpCode::LoadF)
     }
     #[cfg(feature = "debug_logs")]
     pub(crate) fn is_ax(&self) -> bool {
         matches!(self, OpCode::ExtraArg)
+    }
+    pub(crate) fn is_ak(&self) -> bool {
+        matches!(self, OpCode::Test)
+    }
+    pub(crate) fn is_absc(&self) -> bool {
+        matches!(self, OpCode::AddI | OpCode::ShrI | OpCode::ShlI)
+    }
+    pub(crate) fn is_abc(&self) -> bool {
+        matches!(
+            self,
+            OpCode::Move
+                | OpCode::LoadFalse
+                | OpCode::LoadFalseSkip
+                | OpCode::LoadTrue
+                | OpCode::LoadNil
+                | OpCode::GetUpVal
+                | OpCode::SetupVal
+                | OpCode::GetTabUp
+                | OpCode::GetTable
+                | OpCode::GetI
+                | OpCode::GetField
+                | OpCode::SetTabUp
+                | OpCode::SetTable
+                | OpCode::SetI
+                | OpCode::SetField
+                | OpCode::NewTable
+                | OpCode::OpSelf
+                | OpCode::AddK
+                | OpCode::SubK
+                | OpCode::MulK
+                | OpCode::ModK
+                | OpCode::PowK
+                | OpCode::DivK
+                | OpCode::IntegerDivK
+                | OpCode::BinaryAndK
+                | OpCode::BinaryOrK
+                | OpCode::BinaryXorK
+                | OpCode::Add
+                | OpCode::Sub
+                | OpCode::Mul
+                | OpCode::Mod
+                | OpCode::Pow
+                | OpCode::Div
+                | OpCode::IntegerDiv
+                | OpCode::BinaryAnd
+                | OpCode::BinaryOr
+                | OpCode::BinaryXor
+                | OpCode::Shl
+                | OpCode::Shr
+                | OpCode::MMBin
+                | OpCode::MMBinI
+                | OpCode::MMBinK
+                | OpCode::UnaryMinus
+                | OpCode::BinaryNot
+                | OpCode::Not
+                | OpCode::Len
+                | OpCode::Concat
+                | OpCode::Close
+                | OpCode::ToBeClosed
+                | OpCode::Eq
+                | OpCode::Lt
+                | OpCode::Le
+                | OpCode::EqK
+                | OpCode::EqI
+                | OpCode::LtI
+                | OpCode::LeI
+                | OpCode::GtI
+                | OpCode::GeI
+                | OpCode::TestSet
+                | OpCode::Call
+                | OpCode::TailCall
+                | OpCode::Return
+                | OpCode::Return0
+                | OpCode::Return1
+                | OpCode::TForCall
+                | OpCode::SetList
+        )
+    }
+    pub(crate) fn is_sj(&self) -> bool {
+        matches!(self, OpCode::Jmp)
     }
 }
 
@@ -245,52 +572,111 @@ impl TryFrom<u32> for OpCode {
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(Self::Move),
-            1 => Ok(Self::LoadK),
-            2 => Ok(Self::LoadKx),
-            3 => Ok(Self::LoadBool),
-            4 => Ok(Self::LoadNil),
-            5 => Ok(Self::GetUpVal),
-            6 => Ok(Self::GetTabUp),
-            7 => Ok(Self::GetTable),
-            8 => Ok(Self::SetTabUp),
-            9 => Ok(Self::SetupVal),
-            10 => Ok(Self::SetTable),
-            11 => Ok(Self::NewTable),
-            12 => Ok(Self::OpSelf),
-            13 => Ok(Self::Add),
-            14 => Ok(Self::Sub),
-            15 => Ok(Self::Mul),
-            16 => Ok(Self::Mod),
-            17 => Ok(Self::Pow),
-            18 => Ok(Self::Div),
-            19 => Ok(Self::IntegerDiv),
-            20 => Ok(Self::BinaryAnd),
-            21 => Ok(Self::BinaryOr),
-            22 => Ok(Self::BinaryXor),
-            23 => Ok(Self::Shl),
-            24 => Ok(Self::Shr),
-            25 => Ok(Self::UnaryMinus),
-            26 => Ok(Self::BinaryNot),
-            27 => Ok(Self::Not),
-            28 => Ok(Self::Len),
-            29 => Ok(Self::Concat),
-            30 => Ok(Self::Jmp),
-            31 => Ok(Self::Eq),
-            32 => Ok(Self::Lt),
-            33 => Ok(Self::Le),
-            34 => Ok(Self::Test),
-            35 => Ok(Self::TestSet),
-            36 => Ok(Self::Call),
-            37 => Ok(Self::TailCall),
-            38 => Ok(Self::Return),
-            39 => Ok(Self::ForLoop),
-            40 => Ok(Self::ForPrep),
-            41 => Ok(Self::TForCall),
-            42 => Ok(Self::TForLoop),
-            43 => Ok(Self::SetList),
-            44 => Ok(Self::Closure),
-            45 => Ok(Self::VarArg),
-            46 => Ok(Self::ExtraArg),
+            1 => Ok(Self::LoadI),
+            2 => Ok(Self::LoadF),
+            3 => Ok(Self::LoadK),
+            4 => Ok(Self::LoadKx),
+            5 => Ok(Self::LoadFalse),
+            6 => Ok(Self::LoadFalseSkip),
+            7 => Ok(Self::LoadTrue),
+            8 => Ok(Self::LoadNil),
+            9 => Ok(Self::GetUpVal),
+            10 => Ok(Self::SetupVal),
+
+            11 => Ok(Self::GetTabUp),
+            12 => Ok(Self::GetTable),
+            13 => Ok(Self::GetI),
+            14 => Ok(Self::GetField),
+
+            15 => Ok(Self::SetTabUp),
+            16 => Ok(Self::SetTable),
+            17 => Ok(Self::SetI),
+            18 => Ok(Self::SetField),
+
+            19 => Ok(Self::NewTable),
+
+            20 => Ok(Self::OpSelf),
+
+            21 => Ok(Self::AddI),
+            22 => Ok(Self::AddK),
+            23 => Ok(Self::SubK),
+            24 => Ok(Self::MulK),
+            25 => Ok(Self::ModK),
+            26 => Ok(Self::PowK),
+            27 => Ok(Self::DivK),
+            28 => Ok(Self::IntegerDivK),
+
+            29 => Ok(Self::BinaryAndK),
+            30 => Ok(Self::BinaryOrK),
+            31 => Ok(Self::BinaryXorK),
+
+            32 => Ok(Self::ShrI),
+            33 => Ok(Self::ShlI),
+
+            34 => Ok(Self::Add),
+            35 => Ok(Self::Sub),
+            36 => Ok(Self::Mul),
+            37 => Ok(Self::Mod),
+            38 => Ok(Self::Pow),
+            39 => Ok(Self::Div),
+            40 => Ok(Self::IntegerDiv),
+
+            41 => Ok(Self::BinaryAnd),
+            42 => Ok(Self::BinaryOr),
+            43 => Ok(Self::BinaryXor),
+            44 => Ok(Self::Shl),
+            45 => Ok(Self::Shr),
+
+            46 => Ok(Self::MMBin),
+            47 => Ok(Self::MMBinI),
+            48 => Ok(Self::MMBinK),
+
+            49 => Ok(Self::UnaryMinus),
+            50 => Ok(Self::BinaryNot),
+            51 => Ok(Self::Not),
+            52 => Ok(Self::Len),
+
+            53 => Ok(Self::Concat),
+
+            54 => Ok(Self::Close),
+            55 => Ok(Self::ToBeClosed),
+            56 => Ok(Self::Jmp),
+            57 => Ok(Self::Eq),
+            58 => Ok(Self::Lt),
+            59 => Ok(Self::Le),
+
+            60 => Ok(Self::EqK),
+            61 => Ok(Self::EqI),
+            62 => Ok(Self::LtI),
+            63 => Ok(Self::LeI),
+            64 => Ok(Self::GtI),
+            65 => Ok(Self::GeI),
+
+            66 => Ok(Self::Test),
+            67 => Ok(Self::TestSet),
+
+            68 => Ok(Self::Call),
+            69 => Ok(Self::TailCall),
+
+            70 => Ok(Self::Return),
+            71 => Ok(Self::Return0),
+            72 => Ok(Self::Return1),
+
+            73 => Ok(Self::ForLoop),
+            74 => Ok(Self::ForPrep),
+
+            75 => Ok(Self::TForPrep),
+            76 => Ok(Self::TForCall),
+            77 => Ok(Self::TForLoop),
+
+            78 => Ok(Self::SetList),
+
+            79 => Ok(Self::Closure),
+
+            80 => Ok(Self::VarArg),
+            81 => Ok(Self::VarArgPrep),
+
+            82 => Ok(Self::ExtraArg),
             _ => Err(()),
         }
     }
@@ -320,24 +706,12 @@ pub(crate) fn set_arg_b(dest: &mut Instruction, arg: u32) {
     *dest = (*dest & MASK_UNSET_B) | ((arg << POS_B) & MASK_SET_B);
 }
 #[inline]
-#[cfg(feature = "debug_logs")]
 pub(crate) fn get_arg_sb(i: Instruction) -> i32 {
-    let b = get_arg_b(i);
-    if b >= 256 {
-        -((b - 256) as i32) - 1
-    } else {
-        b as i32
-    }
+    get_arg_b(i) as i32 - OFFSET_SC
 }
 #[inline]
-#[cfg(feature = "debug_logs")]
 pub(crate) fn get_arg_sc(i: Instruction) -> i32 {
-    let c = get_arg_c(i);
-    if c >= 256 {
-        -((c - 256) as i32) - 1
-    } else {
-        c as i32
-    }
+    get_arg_c(i) as i32 - OFFSET_SC
 }
 
 #[inline]
@@ -363,17 +737,34 @@ pub(crate) fn get_arg_ax(i: Instruction) -> u32 {
 
 #[inline]
 pub(crate) fn get_arg_sbx(i: Instruction) -> i32 {
-    (get_arg_bx(i) as i64 - MAXARG_SBX as i64) as i32
+    (get_arg_bx(i) as i64 - OFFSET_SBX as i64) as i32
 }
-pub(crate) fn set_arg_sbx(dest: &mut Instruction, sbx: i32) {
-    set_arg_bx(dest, (sbx + MAXARG_SBX) as u32);
+pub(crate) fn _set_arg_sbx(dest: &mut Instruction, sbx: i32) {
+    set_arg_bx(dest, (sbx + OFFSET_SBX) as u32);
 }
 
-pub(crate) fn create_abc(opcode: u32, a: i32, b: i32, c: i32) -> u32 {
+#[inline]
+pub(crate) fn get_arg_k(i: Instruction) -> u32 {
+    (i & MASK_SET_K) >> POS_K
+}
+pub(crate) fn set_arg_k(dest: &mut Instruction, arg: u32) {
+    *dest = (*dest & MASK_UNSET_K) | ((arg << POS_K) & MASK_SET_K);
+}
+
+#[inline]
+pub(crate) fn get_arg_sj(i: Instruction) -> i32 {
+    ((i & MASK_SET_SJ) >> POS_SJ) as i32 - OFFSET_SJ
+}
+pub(crate) fn set_arg_sj(dest: &mut Instruction, sj: i32) {
+    *dest = (*dest & MASK_UNSET_SJ) | (((sj + OFFSET_SJ) << POS_SJ) as u32 & MASK_SET_SJ);
+}
+
+pub(crate) fn create_abck(opcode: u32, a: i32, b: i32, c: i32, k: u32) -> u32 {
     opcode
         | ((a << POS_A) as u32 & MASK_SET_A)
         | ((b << POS_B) as u32 & MASK_SET_B)
         | ((c << POS_C) as u32 & MASK_SET_C)
+        | ((k << POS_K) & MASK_SET_K)
 }
 
 pub(crate) fn create_abx(opcode: u32, a: i32, bx: u32) -> u32 {
@@ -384,6 +775,6 @@ pub(crate) fn create_ax(opcode: u32, ax: u32) -> u32 {
     opcode | ((ax << POS_AX) & MASK_SET_A)
 }
 
-pub(crate) fn is_reg_constant(reg: u32) -> bool {
-    reg & BIT_RK != 0
+pub(crate) fn create_sj(opcode: u32, j: u32, k: u32) -> u32 {
+    opcode | ((j << POS_SJ) & MASK_SET_SJ) | ((k << POS_K) & MASK_SET_K)
 }

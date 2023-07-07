@@ -58,58 +58,53 @@ pub fn typename(s: &LuaState, index: isize) -> String {
     s.index2adr(index).get_type_name().to_owned()
 }
 
-pub fn check_number(s: &mut LuaState, index: isize) -> Result<LuaFloat, ()> {
+pub fn check_number(s: &mut LuaState, index: isize) -> Result<LuaFloat, LuaError> {
     match api::to_number(s, index) {
         None => {
-            type_error(s, index, "number").map_err(|_| ())?;
+            type_error(s, index, "number")?;
             unreachable!()
         }
         Some(value) => Ok(value),
     }
 }
 
-pub fn check_numeral(s: &mut LuaState, index: isize) -> Result<LuaFloat, ()> {
+pub fn check_numeral(s: &mut LuaState, index: isize) -> Result<LuaFloat, LuaError> {
     match s.index2adr(index) {
         TValue::Float(n) => Ok(n),
         TValue::Integer(i) => Ok(i as LuaFloat),
         _ => {
-            type_error(s, index, "number").map_err(|_| ())?;
+            type_error(s, index, "number")?;
             unreachable!()
         }
     }
 }
 
-pub fn check_boolean(s: &mut LuaState, index: isize) -> Result<bool, ()> {
-    let value = api::to_boolean(s, index);
-    Ok(value)
-}
-
-pub fn check_integer(s: &mut LuaState, index: isize) -> Result<LuaInteger, ()> {
+pub fn check_integer(s: &mut LuaState, index: isize) -> Result<LuaInteger, LuaError> {
     match api::to_integer(s, index) {
         None => {
-            arg_error(s, index, "number has no integer representation").map_err(|_| ())?;
+            arg_error(s, index, "number has no integer representation")?;
             unreachable!()
         }
         Some(value) => Ok(value),
     }
 }
 
-pub fn check_string(s: &mut LuaState, index: isize) -> Result<String, ()> {
+pub fn check_string(s: &mut LuaState, index: isize) -> Result<String, LuaError> {
     match api::to_string(s, index) {
         Some(s) => Ok(s),
         None => {
-            type_error(s, index, "string").map_err(|_| ())?;
+            type_error(s, index, "string")?;
             unreachable!()
         }
     }
 }
 
-pub fn check_table(s: &mut LuaState, index: isize) -> Result<TableRef, ()> {
+pub fn check_table(s: &mut LuaState, index: isize) -> Result<TableRef, LuaError> {
     match s.index2adr(index) {
         TValue::Table(tref) => Ok(tref.clone()),
         _ => {
-            let _ = type_error(s, index, "table");
-            Err(())
+            type_error(s, index, "table")?;
+            unreachable!()
         }
     }
 }
@@ -142,10 +137,6 @@ pub fn opt_integer(state: &mut LuaState, narg: i32) -> Option<LuaInteger> {
 
 pub fn opt_number(state: &mut LuaState, narg: i32) -> Option<LuaFloat> {
     check_number(state, narg as isize).ok()
-}
-
-pub fn opt_boolean(state: &mut LuaState, narg: i32) -> Option<bool> {
-    check_boolean(state, narg as isize).ok()
 }
 
 pub fn opt_table(state: &mut LuaState, narg: i32) -> Option<TableRef> {
@@ -199,7 +190,7 @@ pub fn get_meta_field(s: &mut LuaState, obj: i32, event: &str) -> bool {
 
 /// Creates a new table and registers there the functions in list `funcs`
 pub fn new_lib(state: &mut LuaState, funcs: &[LibReg]) {
-    api::create_table(state);
+    api::new_table(state);
     set_funcs(state, funcs, 0);
 }
 

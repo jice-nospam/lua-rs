@@ -94,8 +94,18 @@ impl TValue {
             TValue::Thread() => "thread",
         }
     }
+    pub fn try_len(&self) -> Option<usize> {
+        match self {
+            TValue::Table(tref) => Some(tref.borrow().len()),
+            TValue::String(s) => Some(s.len()),
+            _ => None,
+        }
+    }
     pub fn new_table() -> Self {
         Self::Table(Rc::new(RefCell::new(Table::new())))
+    }
+    pub fn create_table(narr: usize, nrec: usize) -> Self {
+        Self::Table(Rc::new(RefCell::new(Table::with_capacity(narr, nrec))))
     }
     pub fn is_nil(&self) -> bool {
         matches!(self, TValue::Nil)
@@ -114,7 +124,7 @@ impl TValue {
     }
     pub fn borrow_string_value(&self) -> &str {
         match self {
-            TValue::String(s) => &s,
+            TValue::String(s) => s,
             _ => unreachable!(),
         }
     }
@@ -125,50 +135,43 @@ impl TValue {
         matches!(self, TValue::Integer(_))
     }
     pub fn is_number(&self) -> bool {
+        matches!(self, TValue::Float(_) | TValue::Integer(_))
+    }
+    pub fn into_float(&self) -> Option<LuaFloat> {
         match self {
-            TValue::Float(_) | TValue::Integer(_) => true,
-            _ => false,
+            TValue::String(rcs) => str2d(rcs),
+            _ => self.into_float_ns(),
         }
     }
-    pub fn to_float(&self) -> Result<LuaFloat, ()> {
+    /// convert value into float without string coersion
+    pub fn into_float_ns(&self) -> Option<LuaFloat> {
         match self {
-            TValue::Float(n) => Ok(*n),
-            _ => Err(()),
+            TValue::Integer(n) => Some(*n as LuaFloat),
+            TValue::Float(n) => Some(*n),
+            _ => None,
         }
     }
-    pub fn to_integer(&self) -> Result<LuaInteger, ()> {
+    pub fn into_integer(&self) -> Option<LuaInteger> {
         match self {
-            TValue::Integer(n) => Ok(*n),
-            _ => Err(()),
+            TValue::String(rcs) => match str2d(rcs) {
+                Some(v) if v.fract() == 0.0 => Some(v as LuaInteger),
+                _ => None,
+            },
+            _ => self.into_integer_ns(),
         }
     }
-    pub fn into_float(&self) -> Result<LuaFloat, ()> {
+    /// convert a value into an integer without string coersion
+    pub fn into_integer_ns(&self) -> Option<LuaInteger> {
         match self {
-            TValue::Integer(n) => Ok(*n as LuaFloat),
-            TValue::Float(n) => Ok(*n),
-            TValue::String(rcs) => str2d(&*rcs).ok_or(()),
-            _ => Err(()),
-        }
-    }
-    pub fn into_integer(&self) -> Result<LuaInteger, ()> {
-        match self {
-            TValue::Integer(n) => Ok(*n),
+            TValue::Integer(n) => Some(*n),
             TValue::Float(n) => {
                 if n.fract() == 0.0 {
-                    Ok(*n as LuaInteger)
+                    Some(*n as LuaInteger)
                 } else {
-                    Err(())
+                    None
                 }
             }
-            TValue::String(rcs) => {
-                let v = str2d(&*rcs).ok_or(())?;
-                if v.fract() == 0.0 {
-                    Ok(v as LuaInteger)
-                } else {
-                    Err(())
-                }
-            }
-            _ => Err(()),
+            _ => None,
         }
     }
     pub fn is_string(&self) -> bool {
@@ -179,6 +182,18 @@ impl TValue {
     }
     pub fn is_function(&self) -> bool {
         matches!(self, TValue::Function(_))
+    }
+    pub fn is_rust_function(&self) -> bool {
+        match self {
+            TValue::Function(clref) if matches!(*clref.borrow(), Closure::Rust(_)) => true,
+            _ => false,
+        }
+    }
+    pub fn is_lua_function(&self) -> bool {
+        match self {
+            TValue::Function(clref) if matches!(*clref.borrow(), Closure::Lua(_)) => true,
+            _ => false,
+        }
     }
     pub fn is_boolean(&self) -> bool {
         matches!(self, TValue::Boolean(_))
@@ -272,7 +287,7 @@ pub struct Proto {
     pub upvalues: Vec<UpValDesc>,
     /// file name
     pub source: String,
-    pub linedefined: usize,
+    pub line_defined: usize,
     pub lastlinedefined: usize,
     /// number of fixed parameters
     pub numparams: usize,
@@ -383,6 +398,13 @@ impl Closure {
         unreachable!()
     }
     #[inline]
+    pub fn set_rust_upvalue(&mut self, id: usize, value: TValue) {
+        if let Closure::Rust(cl) = self {
+            cl.upvalues[id] = value;
+        }
+        unreachable!()
+    }
+    #[inline]
     pub fn set_lua_upval_value(&mut self, id: usize, value: TValue) {
         if let Closure::Lua(cl) = self {
             cl.upvalues[id].value = value;
@@ -429,23 +451,6 @@ pub fn chunk_id(source_name: &str) -> String {
         // get first line of source code
         let len = source_name.find(['\r', '\n']).unwrap_or(source_name.len());
         format!("[string \"{}...\"]", &source_name[0..len])
-    }
-}
-
-/// converts an integer to a "floating point byte", represented as
-/// (eeeeexxx), where the real value is (1xxx) * 2^(eeeee - 1) if
-/// eeeee != 0 and (xxx) otherwise.
-pub(crate) const fn int2fb(val: u32) -> u32 {
-    let mut e = 0; // exponent
-    let mut val = val;
-    while val >= 16 {
-        val = (val + 1) >> 1;
-        e += 1;
-    }
-    if val < 8 {
-        val
-    } else {
-        ((e + 1) << 3) | (val - 8)
     }
 }
 

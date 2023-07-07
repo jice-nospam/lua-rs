@@ -5,9 +5,10 @@ use std::{collections::HashMap, rc::Rc};
 use crate::{
     api::LuaError,
     ldo::CallId,
-    lex::{str2d, LexState},
+    lex::LexState,
     limits::{InstId, MAX_UPVAL},
     luaH::TableRef,
+    luaV::f_close,
     object::{Closure, ClosureRef, Proto, ProtoId, RClosure, StkId, TValue, UpVal},
     opcodes::{get_arg_b, get_arg_c, rk_is_k, BIT_RK},
     LuaFloat, LuaInteger, LuaRustFunction, LUA_MINSTACK, LUA_MULTRET, LUA_REGISTRYINDEX,
@@ -17,6 +18,9 @@ use crate::{
 #[cfg(target_arch = "wasm32")]
 use crate::wasm::js_console;
 
+/// special status to close upvalues preserving the top of the stack
+const CLOSE_KTOP: i32 = -1;
+
 pub type PanicFunction = fn(&mut LuaState) -> i32;
 
 pub const EXTRA_STACK: usize = 5;
@@ -25,21 +29,23 @@ pub const EXTRA_STACK: usize = 5;
 /// original value of 'allowhook'
 pub const CIST_OAH: u32 = 1 << 0;
 /// call is running a Lua function
-pub const CIST_LUA: u32 = 1 << 1;
-/// call is running a debug hook
-pub const CIST_HOOKED: u32 = 1 << 2;
+pub const CIST_RUST: u32 = 1 << 1;
 /// call is running on a fresh invocation of luaV_execute
-pub const CIST_FRESH: u32 = 1 << 3;
+pub const CIST_FRESH: u32 = 1 << 2;
+/// call is running a debug hook
+pub const CIST_HOOKED: u32 = 1 << 3;
 /// call is a yieldable protected call
 pub const CIST_YPCALL: u32 = 1 << 4;
 /// call was tail called
 pub const CIST_TAIL: u32 = 1 << 5;
 /// last hook called yielded
 pub const CIST_HOOKYIELD: u32 = 1 << 6;
-/// using __lt for __le
-pub const CIST_LEQ: u32 = 1 << 7;
-/// call is running a finalizer
-pub const CIST_FIN: u32 = 1 << 8;
+/// function "called" a finalizer
+pub const CIST_FIN: u32 = 1 << 7;
+/// 'ci' has transfer information
+pub const CIST_TRAN: u32 = 1 << 8;
+/// function is closing tbc variables
+pub const CIST_CLSRET: u32 = 1 << 9;
 
 /// informations about a call
 /// When a thread yields, 'func' is adjusted to pretend that the
@@ -54,20 +60,34 @@ pub struct CallInfo {
     pub func: StkId,
     /// top for this function
     pub top: StkId,
-    /// expected number of results from this function
-    pub nresults: i32,
-    /// bitfield. see CIST_*
-    pub call_status: u32,
+
     // for Lua functions
-    /// base for this function
-    pub base: StkId,
     /// program counter
     pub saved_pc: InstId,
+    /// # of extra arguments in vararg functions
+    pub n_extra_args: usize,
+
     // for Rust functions
     /// context info. in case of yields
     pub ctx: u32,
     /// continuation in case of yields
     pub k: Option<LuaRustFunction>,
+
+    /// called function index
+    pub func_idx: usize,
+    /// number of values yielded
+    pub n_yield: usize,
+    /// number of values returned
+    pub nres: usize,
+    /// offset of first value transferred
+    pub transfer_first: usize,
+    /// number of values transferred
+    pub transfer_count: usize,
+
+    /// expected number of results from this function
+    pub nresults: i32,
+    /// bitfield. see CIST_*
+    pub call_status: u32,
 }
 
 impl CallInfo {
@@ -117,6 +137,8 @@ pub struct LuaState {
     pub envvalue: TValue,
     /// list of open upvalues
     pub open_upval: Vec<UpVal>,
+    /// list of to-be-closed variables
+    pub tbc_list: Vec<StkId>,
     /// all closures prototypes
     pub protos: Vec<Proto>,
     /// io default output
@@ -167,6 +189,7 @@ impl Default for LuaState {
             envvalue: Default::default(),
             open_upval: Default::default(),
             protos: Default::default(),
+            tbc_list: Vec::new(),
         }
     }
 }
@@ -178,7 +201,7 @@ impl LuaState {
         // `function' entry for this `ci'
         //self.stack.push(TValue::Nil);
         ci.top = 1 + LUA_MINSTACK;
-        ci.call_status = CIST_LUA;
+        ci.call_status = CIST_RUST;
         self.base_ci.push(ci);
     }
     #[inline]
@@ -236,7 +259,7 @@ impl LuaState {
 
     #[inline]
     fn api_check_nelems(&self, n: usize) {
-        debug_assert!(n as i32 <= self.stack.len() as i32 - self.base_ci[self.ci].base as i32);
+        debug_assert!(n as i32 <= self.stack.len() as i32 - self.base_ci[self.ci].func as i32);
     }
     #[inline]
     pub(crate) fn check_results(&self, nargs: usize, nresults: i32) {
@@ -257,7 +280,7 @@ impl LuaState {
     }
     pub(crate) fn get_closure_ref(&self, func: usize) -> ClosureRef {
         if let TValue::Function(cl) = &self.stack[func] {
-            Rc::clone(&cl)
+            Rc::clone(cl)
         } else {
             unreachable!()
         }
@@ -290,7 +313,11 @@ impl LuaState {
         self.stack.push(TValue::from(value));
     }
 
-    pub(crate) fn create_table(&mut self) {
+    pub(crate) fn create_table(&mut self, narr: usize, nrec: usize) {
+        self.stack.push(TValue::create_table(narr, nrec));
+    }
+
+    pub(crate) fn new_table(&mut self) {
         self.stack.push(TValue::new_table());
     }
 
@@ -356,6 +383,7 @@ impl LuaState {
             }
         }
     }
+
     /// put field value `key` from table `t` on stack
     pub(crate) fn get_tablev(
         stack: &mut Vec<TValue>,
@@ -415,6 +443,26 @@ impl LuaState {
         let len = self.stack.len() as isize;
         (index >= 0 && index < len) || (index < 0 && index >= -len) || index <= LUA_REGISTRYINDEX
     }
+    /// convert a relative index into an absolute position in the stack
+    pub(crate) fn index2stack(&self, index: isize) -> Option<usize> {
+        let func = self.base_ci[self.ci].func;
+        if index > 0 {
+            // positive index in the stack
+            let index = index as usize + func;
+            debug_assert!(index < self.base_ci[self.ci].top);
+            if index >= self.stack.len() {
+                return None;
+            }
+            Some(index)
+        } else if index > LUA_REGISTRYINDEX {
+            // negative index in the stack (count from top)
+            let index = (-index) as usize;
+            debug_assert!(index != 0 && index + func <= self.stack.len());
+            Some(self.stack.len() - index)
+        } else {
+            None
+        }
+    }
     pub(crate) fn index2adr(&self, index: isize) -> TValue {
         let func = self.base_ci[self.ci].func;
         if index > 0 {
@@ -448,73 +496,121 @@ impl LuaState {
         }
     }
 
+    pub(crate) fn set_index(&mut self, index: isize, value: TValue) {
+        let func = self.base_ci[self.ci].func;
+        if index > 0 {
+            // positive index in the stack
+            let index = index as usize + func;
+            debug_assert!(index < self.base_ci[self.ci].top);
+            if index >= self.stack.len() {
+                return;
+            }
+            self.stack[index] = value;
+        } else if index > LUA_REGISTRYINDEX {
+            // negative index in the stack (count from top)
+            let index = self.stack.len() - ((-index) as usize);
+            debug_assert!(index != 0 && index + func <= self.stack.len());
+            self.stack[index] = value;
+        } else {
+            match index {
+                LUA_REGISTRYINDEX => self.g.registry = value,
+                _ => {
+                    // upvalues
+                    let index = (LUA_REGISTRYINDEX - index) as usize;
+                    debug_assert!(index <= MAX_UPVAL + 1);
+                    // TODO light rust function
+                    let stkid = self.base_ci[self.ci].func;
+                    if index <= self.get_closure_nupvalues(stkid) {
+                        self.set_rust_closure_upvalue(stkid, index - 1, value);
+                    }
+                }
+            }
+        }
+    }
+
     pub(crate) fn pop_stack(&mut self, count: usize) {
         let newlen = self.stack.len() - count;
         self.stack.truncate(newlen);
     }
 
-    /// Finishes a function call: calls hook if necessary, removes CallInfo,
-    /// moves current number of results to proper place; returns 0 iff call
-    /// wanted multiple (variable number of) results.
-    pub(crate) fn poscall(&mut self, first_result: StkId, nres: usize) -> bool {
-        // TODO hooks
+    /// Finishes a function call: calls hook if necessary, moves current
+    /// number of results to proper place, and returns to previous call
+    /// info. If function has to close variables, hook must be called after
+    /// that.
+    pub(crate) fn poscall(&mut self, nres: i32) -> Result<(), LuaError> {
         let ci = &self.base_ci[self.ci];
         // res == final position of 1st result
         let res = ci.func;
         let wanted = ci.nresults;
+        // TODO hooks
 
+        // move results to proper place
+        self.move_results(res, nres, wanted)?;
         self.base_ci.pop(); // back to caller
         self.ci -= 1;
-        // move results to proper place
-        self.move_results(first_result, res, nres, wanted)
+        Ok(())
     }
 
     /// Given 'nres' results at 'firstResult', move 'wanted' of them to 'res'.
     /// Handle most typical cases (zero results for commands, one result for
     /// expressions, multiple results for tail calls/single parameters)
     /// separated.
-    fn move_results(&mut self, first_result: StkId, res: StkId, nres: usize, wanted: i32) -> bool {
+    fn move_results(&mut self, res: StkId, nres: i32, wanted: i32) -> Result<(), LuaError> {
+        let mut wanted = wanted;
+        let mut nres = nres as usize;
         match wanted {
-            0 => (), // nothing to move
+            0 => {
+                // no values needed
+                self.stack.resize(res, TValue::Nil);
+                return Ok(());
+            }
             1 => {
+                // one value needed
                 if nres == 0 {
                     // no results?
                     self.set_stack_from_value(res, TValue::Nil); // adjust with nil
                 } else {
-                    self.set_stack_from_idx(res, first_result); // move it to proper place
+                    // at least one result
+                    self.set_stack_from_idx(res, self.stack.len() - nres); // move it to proper place
                 }
+                self.stack.resize(res + 1, TValue::Nil);
+                return Ok(());
             }
             LUA_MULTRET => {
-                for i in 0..nres {
-                    // move all results to correct place
-                    self.set_stack_from_idx(res + i, first_result + i);
-                }
-                self.stack.resize(res + nres, TValue::Nil);
-                return false; //  wanted == LUA_MULTRET
+                wanted = nres as i32; // we want all results
             }
             _ => {
-                if wanted <= nres as i32 {
-                    // enough results?
-                    for i in 0..wanted as usize {
-                        // move wanted results to correct place
-                        self.set_stack_from_idx(res + i, first_result + i);
-                    }
-                } else {
-                    // not enough results; use all of them plus nils
-                    for i in 0..nres {
-                        // move all results to correct place
-                        self.set_stack_from_idx(res + i, first_result + i);
-                    }
-                    for i in nres..wanted as usize {
-                        // complete wanted number of results
-                        self.set_stack_from_value(res + i, TValue::Nil);
+                // two/more results and/or to-be-closed variables
+                if wanted < LUA_MULTRET {
+                    // to-be-closed variables?
+                    self.base_ci[self.ci].call_status |= CIST_CLSRET; // in case of yield
+                    self.base_ci[self.ci].nres = nres;
+                    f_close(self, res, CLOSE_KTOP, true)?;
+                    self.base_ci[self.ci].call_status &= !CIST_CLSRET;
+                    // TODO hooks
+                    wanted = -wanted - 3;
+                    if wanted == LUA_MULTRET {
+                        wanted = nres as i32; // we want all results
                     }
                 }
             }
         }
+        // generic case
+        let first_result = self.stack.len() - nres; // index of first result
+        if nres as i32 > wanted {
+            //  extra results?
+            nres = wanted as usize; // don't need them
+        }
+        for i in 0..nres {
+            // move all results to correct place
+            self.set_stack_from_idx(res + i, first_result + i);
+        }
+        for i in nres..wanted as usize {
+            // complete wanted number of results
+            self.set_stack_from_value(res + i, TValue::Nil);
+        }
         self.stack.resize(res + wanted as usize, TValue::Nil); // top points after the last result
-
-        true
+        Ok(())
     }
 
     pub(crate) fn find_upval(&mut self, func: usize, level: usize) -> UpVal {
@@ -534,34 +630,12 @@ impl LuaState {
             }
             let uv = UpVal {
                 v: level as StkId,
-                value: self.stack[level as usize].clone(),
+                value: self.stack[level].clone(),
             };
             cl.upvalues.insert(index, uv.clone());
             return uv;
         }
         unreachable!()
-    }
-
-    /// convert stack[obj] to a number into stack[dst], return the number value
-    pub(crate) fn to_number(
-        stack: &mut [TValue],
-        obj: StkId,
-        dst: Option<StkId>,
-    ) -> Option<LuaFloat> {
-        match &stack[obj] {
-            TValue::Integer(n) => Some(*n as LuaFloat),
-            TValue::Float(n) => Some(*n),
-            TValue::String(s) => match str2d(s) {
-                Some(n) => {
-                    if let Some(dst) = dst {
-                        stack[dst] = TValue::Float(n);
-                    }
-                    Some(n)
-                }
-                _ => None,
-            },
-            _ => None,
-        }
     }
 
     pub(crate) fn close_func(&mut self, level: StkId) {
@@ -578,20 +652,20 @@ impl LuaState {
         }
     }
 
-    pub(crate) fn get_rkb(&self, i: u32, base: u32, protoid: usize) -> TValue {
-        let b = get_arg_b(i);
-        let rbi = (base + b) as usize;
-        if rk_is_k(b) {
-            self.get_lua_constant(protoid, (b & !BIT_RK) as usize)
-        } else {
-            self.stack[rbi].clone()
-        }
+    pub(crate) fn get_kb(&self, i: u32, protoid: usize) -> TValue {
+        let b = get_arg_b(i) as usize;
+        self.get_lua_constant(protoid, b)
+    }
+
+    pub(crate) fn get_kc(&self, i: u32, protoid: usize) -> TValue {
+        let c = get_arg_c(i) as usize;
+        self.get_lua_constant(protoid, c)
     }
 
     pub(crate) fn get_rkc(&self, i: u32, base: u32, protoid: usize) -> TValue {
         let c = get_arg_c(i);
         let rci = (base + c) as usize;
-        if rk_is_k(c) {
+        if rk_is_k(i) {
             self.get_lua_constant(protoid, (c & !BIT_RK) as usize)
         } else {
             self.stack[rci].clone()
@@ -636,13 +710,10 @@ impl LuaState {
         cl.get_rust_upvalue(upval_id)
     }
 
-    #[inline]
-    pub(crate) fn set_or_push(&mut self, index: usize, val: TValue) {
-        if index == self.stack.len() {
-            self.stack.push(val);
-        } else {
-            self.stack[index] = val;
-        }
+    fn set_rust_closure_upvalue(&mut self, func: usize, upval_id: usize, value: TValue) {
+        let cl = self.get_closure_ref(func);
+        let mut cl = cl.borrow_mut();
+        cl.set_rust_upvalue(upval_id, value);
     }
 
     fn init_registry(&mut self) {
@@ -685,11 +756,87 @@ impl LuaState {
     ) -> ProtoId {
         let mut proto = Proto::new(source);
         let cur_proto = lex.borrow_fs(None).f;
-        proto.linedefined = line;
+        proto.line_defined = line;
         let id = self.protos.len();
         self.protos.push(proto);
         self.protos[cur_proto].p.push(id);
         id
+    }
+    pub(crate) fn get_table_value_by_key(&mut self, tableid: usize, key: &TValue, dest_id: usize) {
+        // TODO INDEX metamethods
+        if let TValue::Table(rt) = &self.stack[tableid] {
+            let mut rt = rt.clone();
+            loop {
+                let newrt;
+                {
+                    let mut rtmut = rt.borrow_mut();
+                    match rtmut.get(key) {
+                        Some(value) => {
+                            // found a value, put it on stack
+                            if dest_id == self.stack.len() {
+                                self.stack.push(value.clone());
+                            } else {
+                                self.stack[dest_id] = value.clone();
+                            }
+                            return;
+                        }
+                        None => {
+                            if let Some(ref mt) = rtmut.metatable {
+                                // not found. try with the metatable
+                                newrt = mt.clone();
+                            } else {
+                                // no metatable, put Nil on stack
+                                if dest_id == self.stack.len() {
+                                    self.stack.push(TValue::Nil);
+                                } else {
+                                    self.stack[dest_id] = TValue::Nil;
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+                rt = newrt;
+            }
+        }
+    }
+    pub(crate) fn get_table_value(&mut self, tableid: usize, key_id: usize, dest_id: usize) {
+        // TODO INDEX metamethods
+        if let TValue::Table(rt) = &self.stack[tableid] {
+            let mut rt = rt.clone();
+            loop {
+                let newrt;
+                {
+                    let mut rtmut = rt.borrow_mut();
+                    match rtmut.get(&self.stack[key_id]) {
+                        Some(value) => {
+                            // found a value, put it on stack
+                            if dest_id == self.stack.len() {
+                                self.stack.push(value.clone());
+                            } else {
+                                self.stack[dest_id] = value.clone();
+                            }
+                            return;
+                        }
+                        None => {
+                            if let Some(ref mt) = rtmut.metatable {
+                                // not found. try with the metatable
+                                newrt = mt.clone();
+                            } else {
+                                // no metatable, put Nil on stack
+                                if dest_id == self.stack.len() {
+                                    self.stack.push(TValue::Nil);
+                                } else {
+                                    self.stack[dest_id] = TValue::Nil;
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+                rt = newrt;
+            }
+        }
     }
 }
 
