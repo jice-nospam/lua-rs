@@ -270,6 +270,20 @@ impl LuaState {
         );
     }
 
+    pub fn get_metatable(&self, idx: usize) -> Option<TableRef> {
+        match &self.stack[idx] {
+            TValue::Table(tref) => match &tref.borrow().metatable {
+                Some(mtref) => Some(Rc::clone(mtref)),
+                None => None,
+            },
+            // TODO UserData
+            obj @ _ => match self.g.mt.get(obj.get_type_name()) {
+                Some(Some(mtref)) => Some(Rc::clone(mtref)),
+                _ => None,
+            },
+        }
+    }
+
     pub(crate) fn push_rust_closure(&mut self, func: LuaRustFunction, nup_values: usize) {
         self.api_check_nelems(nup_values);
         let mut cl = RClosure::new(func);

@@ -14,7 +14,7 @@ The core of the 5.2 version of the language is implemented in the [v5.2.x](https
 
 The core of the 5.3 version of the language is implemented in the [v5.3.x](https://github.com/jice-nospam/lua-rs/tree/v5.3.x) branch with integer support including bitwise operations. The utf-8 library is not implemented.
 
-Next to be added : consts (5.4).
+Next to be added : metamethods and consts (5.4).
 
 Current status :
 
@@ -31,7 +31,6 @@ Current status :
 ### NOT IMPLEMENTED
 
 - user data
-- metamethods
 - hooks
 - coroutines
 - to-be-closed variables

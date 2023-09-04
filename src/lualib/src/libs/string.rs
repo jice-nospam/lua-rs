@@ -67,6 +67,45 @@ const STR_FUNCS: [LibReg; 15] = [
     },
 ];
 
+const STR_META_METHODS: [LibReg; 9] = [
+    LibReg {
+        name: "__add",
+        func: arith_add,
+    },
+    LibReg {
+        name: "__sub",
+        func: arith_sub,
+    },
+    LibReg {
+        name: "__mul",
+        func: arith_mul,
+    },
+    LibReg {
+        name: "__mod",
+        func: arith_mod,
+    },
+    LibReg {
+        name: "__pow",
+        func: arith_pow,
+    },
+    LibReg {
+        name: "__div",
+        func: arith_div,
+    },
+    LibReg {
+        name: "__idiv",
+        func: arith_idiv,
+    },
+    LibReg {
+        name: "__unm",
+        func: arith_unm,
+    },
+    LibReg {
+        name: "__index",
+        func: no_op, // placeholder
+    },
+];
+
 pub fn lib_open_string(state: &mut LuaState) -> Result<i32, LuaError> {
     luaL::new_lib(state, &STR_FUNCS);
     create_metatable(state);
@@ -75,6 +114,7 @@ pub fn lib_open_string(state: &mut LuaState) -> Result<i32, LuaError> {
 
 fn create_metatable(state: &mut LuaState) {
     api::new_table(state); // create metatable for strings
+    luaL::set_funcs(state, &STR_META_METHODS, 0);
     api::push_literal(state, ""); // dummy string
     api::push_value(state, -2);
     api::set_metatable(state, -2); // set string metatable
@@ -206,6 +246,44 @@ pub fn str_sub(_state: &mut LuaState) -> Result<i32, LuaError> {
 }
 pub fn str_upper(_state: &mut LuaState) -> Result<i32, LuaError> {
     todo!();
+}
+
+// metamethods
+pub fn arith_add(_state: &mut LuaState) -> Result<i32, LuaError> {
+    todo!();
+}
+
+pub fn arith_sub(_state: &mut LuaState) -> Result<i32, LuaError> {
+    todo!();
+}
+
+pub fn arith_mul(_state: &mut LuaState) -> Result<i32, LuaError> {
+    todo!();
+}
+
+pub fn arith_mod(_state: &mut LuaState) -> Result<i32, LuaError> {
+    todo!();
+}
+
+pub fn arith_pow(_state: &mut LuaState) -> Result<i32, LuaError> {
+    todo!();
+}
+
+pub fn arith_div(_state: &mut LuaState) -> Result<i32, LuaError> {
+    todo!();
+}
+
+pub fn arith_idiv(_state: &mut LuaState) -> Result<i32, LuaError> {
+    todo!();
+}
+
+pub fn arith_unm(_state: &mut LuaState) -> Result<i32, LuaError> {
+    todo!();
+}
+
+/// temporary dummy method for the __index metamethod
+pub fn no_op(_state: &mut LuaState) -> Result<i32, LuaError> {
+    unreachable!();
 }
 
 #[cfg(test)]

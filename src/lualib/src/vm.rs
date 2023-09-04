@@ -254,15 +254,17 @@ impl LuaState {
                         let ra = get_ra(base, i);
                         let v1 = get_rb(base, i);
                         let imm = get_arg_sc(i) as LuaInteger;
-                        pc += 1;
-                        self.set_stack_from_value(
-                            ra,
-                            match &self.stack[v1] {
-                                TValue::Integer(iv1) => TValue::Integer(iv1 + imm),
-                                TValue::Float(fv1) => TValue::Float(fv1 + imm as LuaFloat),
-                                _ => unreachable!(),
-                            },
-                        );
+                        match &self.stack[v1] {
+                            TValue::Integer(iv1) => {
+                                self.set_stack_from_value(ra, TValue::Integer(iv1 + imm));
+                                // pc += 1;
+                            }
+                            TValue::Float(fv1) => {
+                                self.set_stack_from_value(ra, TValue::Float(fv1 + imm as LuaFloat));
+                                // pc += 1;
+                            }
+                            _ => (), // else not a number, use next OP = metamethod
+                        }
                     }
                     OpCode::AddK => {
                         let v1 = &self.stack[get_rb(base, i)];
@@ -549,7 +551,16 @@ impl LuaState {
                         }
                     }
                     OpCode::MMBin => {
-                        todo!()
+                        let ra = get_ra(base, i);
+                        let rb = get_rb(base, i);
+                        let tm = get_arg_c(i);
+                        // original arith. expression
+                        let pi = self.get_instruction(protoid, pc - 2);
+                        let result = get_ra(base, pi);
+                        let piop = get_opcode(pi) as u32;
+                        debug_assert!(OpCode::Add as u32 <= piop && piop <= OpCode::Shr as u32);
+                        self.save_state(pc);
+                        self.try_bin_tm(ra, rb, result, tm)?;
                     }
                     OpCode::MMBinI => {
                         todo!()
@@ -1295,6 +1306,7 @@ fn disassemble(state: &LuaState, i: Instruction, func: usize) -> String {
     let a = get_arg_a(i);
     let b = get_arg_b(i) as i8;
     let c = get_arg_c(i) as i8;
+    let sb = get_arg_sb(i);
     let sc = get_arg_sc(i);
     let ax = get_arg_ax(i);
     let sbx = get_arg_sbx(i);
@@ -1304,7 +1316,17 @@ fn disassemble(state: &LuaState, i: Instruction, func: usize) -> String {
     let cl = cl.borrow();
     let cl = cl.borrow_lua_closure();
     let proto = &state.protos[cl.proto];
-    let mut res = if o.is_asbx() {
+    let mut res = if o == OpCode::MMBinI {
+        format!(
+            "{:10} {:>5} {:>5} {:>5} {:>5}",
+            OPCODE_NAME[o as usize], a, sb, c, k
+        )
+    } else if o == OpCode::MMBinK {
+        format!(
+            "{:10} {:>5} {:>5} {:>5} {:>5}",
+            OPCODE_NAME[o as usize], a, b, c, k
+        )
+    } else if o.is_asbx() {
         format!("{:10} {:>5} {:>5}", OPCODE_NAME[o as usize], a, sbx)
     } else if o.is_a() {
         format!("{:10} {:>5}", OPCODE_NAME[o as usize], a)

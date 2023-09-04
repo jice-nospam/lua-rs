@@ -7,11 +7,9 @@ pub fn main() {
     if luaL::dostring(
         &mut state,
         "
-        function sum(...)
-                local args={...};
-                return args[1]+args[2]+args[3]
-            end
-            z=sum(3,8,11)
+        t=1
+        a='4'
+        z=3+t+a+'7'
         print(z)
     ",
     )

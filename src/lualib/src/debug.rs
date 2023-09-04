@@ -52,9 +52,34 @@ fn internal_type_error(
     ))
 }
 
+pub(crate) fn to_int_error(state: &mut LuaState, p1: usize, p2: usize) -> Result<(), LuaError> {
+    let val = var_info(
+        state,
+        if state.stack[p1].into_integer_ns().is_some() {
+            p2
+        } else {
+            p1
+        },
+    );
+    state.run_error(&format!("number {} has no integer representation", val))
+}
+
+pub(crate) fn op_int_error(
+    state: &mut LuaState,
+    p1: usize,
+    p2: usize,
+    msg: &str,
+) -> Result<(), LuaError> {
+    type_error(
+        state,
+        if state.stack[p1].is_number() { p2 } else { p1 },
+        msg,
+    )
+}
+
 /// Build a string with a "description" for the value at position 'id', such as
 /// "variable 'x'" or "upvalue 'y'".
-fn var_info(state: &LuaState, id: usize) -> String {
+pub(crate) fn var_info(state: &LuaState, id: usize) -> String {
     let ci = &state.base_ci[state.ci];
     let funcvalue = &state.stack[ci.func];
     match funcvalue {
